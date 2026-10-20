@@ -27,6 +27,8 @@ struct ListfileInfo
     std::string crateConfigYaml; // preamble MVLCCrateConfig section
     std::string analysisJson;    // "analysis.analysis" entry; empty if absent
     EntryCheck analysisEntry;    // its CRC-32 and length as read (entry empty if absent)
+    std::string messagesLog;     // "messages.log" entry, mvme's log of the run; empty if absent
+    EntryCheck messagesLogEntry; // its CRC-32 and length as read (entry empty if absent)
     size_t archiveEntries = 0;   // entries in the central directory
 };
 
@@ -34,7 +36,8 @@ struct ListfileInfo
 // unsupported_input for non-MVLC listfiles, one part of a split run and
 // missing configuration, and
 // integrity_failure if the archive (I1) or the listfile entry (I2) cannot be
-// read. A damaged analysis.analysis is only recorded in analysisEntry.
+// read. A damaged analysis.analysis or messages.log is only recorded in
+// analysisEntry or messagesLogEntry.
 ListfileInfo read_listfile_info(const std::string &archivePath);
 
 // run_id_from_path(), mvme's run ID for a replay, is in common/names.h.

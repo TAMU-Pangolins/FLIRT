@@ -141,6 +141,9 @@ ListfileInfo read_listfile_info(const std::string &archivePath)
                                 " be verified at the ZIP layer (" + result.listfileEntry + ")");
 
     result.analysisJson = read_entry(zip, "analysis.analysis", result.analysisEntry);
+    // Added at the stop with the analysis (mvlc_readout_worker.cc:497-514);
+    // read for the settings-changes check only (settings_changes.h).
+    result.messagesLog = read_entry(zip, "messages.log", result.messagesLogEntry);
 
     // The preamble is read again, and CRC-checked, by the replay (I2); read
     // errors here are reported as such.

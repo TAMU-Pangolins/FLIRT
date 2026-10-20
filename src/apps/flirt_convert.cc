@@ -47,6 +47,7 @@
 #include "flirt/run_info.h"
 #include "flirt/run_summary.h"
 #include "flirt/sampling_config.h"
+#include "flirt/settings_changes.h"
 #include "flirt/threaded_sink.h"
 #include "flirt/vme_config.h"
 #include "flirt/waveform_output.h"
@@ -962,6 +963,8 @@ int convert_one(int argc, char *argv[])
                   << reportPath
                   << " (" << pipeline.messagesEmitted << " events, " << totalSeconds << " s)\n";
         std::cerr << flirt::run_summary_line(runFacts.times, runFacts.events) << "\n";
+        if (const auto line = flirt::settings_changes_line(runFacts.settings); !line.empty())
+            std::cerr << line << "\n";
         for (const auto &line: waveformConfig.messages)
             std::cerr << line << "\n";
         if (!matchesOfficialLayout)

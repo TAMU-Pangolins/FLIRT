@@ -7,6 +7,7 @@
 #include "common/failures.h"
 #include "flirt/run_info.h"
 #include "flirt/run_summary.h"
+#include "flirt/settings_changes.h"
 
 namespace flirt
 {
@@ -191,6 +192,11 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
         files += "   _waveforms.root";
     row("files", files + "   .flirt.json");
 
+    // The notes, then the warnings, in the order flirt-convert's child prints them.
+    if (const auto line = settings_changes_line(facts.settings); starts_with(line, "note: "))
+        note(line.substr(6));
+    else if (starts_with(line, "warning: "))
+        warnings.push_back(line.substr(9));
     // The waveform config check (flirt_convert.cc waveform_config_check()).
     for (const auto &m: at(report, "/waveformConfig").is_array() ? at(report, "/waveformConfig") : json::array())
     {
