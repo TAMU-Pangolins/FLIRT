@@ -9,6 +9,7 @@ add_library(flirt STATIC
     sampling_config.cc
     run_summary.cc
     settings_changes.cc
+    run_timeline.cc
     listfile_scan.cc
     run_info.cc
     library_log.cc

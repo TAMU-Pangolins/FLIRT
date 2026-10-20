@@ -965,6 +965,9 @@ int convert_one(int argc, char *argv[])
         std::cerr << flirt::run_summary_line(runFacts.times, runFacts.events) << "\n";
         if (const auto line = flirt::settings_changes_line(runFacts.settings); !line.empty())
             std::cerr << line << "\n";
+        // The rate warnings (run_timeline.h).
+        for (const auto &line: flirt::rate_warnings(runFacts.rate, "the report lists them all"))
+            std::cerr << line << "\n";
         for (const auto &line: waveformConfig.messages)
             std::cerr << line << "\n";
         if (!matchesOfficialLayout)

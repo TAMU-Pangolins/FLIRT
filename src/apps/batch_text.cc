@@ -197,6 +197,8 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
         note(line.substr(6));
     else if (starts_with(line, "warning: "))
         warnings.push_back(line.substr(9));
+    for (const auto &w: rate_warning_texts(facts.rate, "the .flirt.json lists them all"))
+        warnings.push_back(w);
     // The waveform config check (flirt_convert.cc waveform_config_check()).
     for (const auto &m: at(report, "/waveformConfig").is_array() ? at(report, "/waveformConfig") : json::array())
     {

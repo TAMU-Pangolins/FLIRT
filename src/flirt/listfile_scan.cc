@@ -44,7 +44,7 @@ uint64_t readout_events(const parser::ReadoutParserCounters &counters)
     return events;
 }
 
-void RunRecorder::systemEvent(const uint32_t *header, uint32_t size, const parser::ReadoutParserCounters &)
+void RunRecorder::systemEvent(const uint32_t *header, uint32_t size, const parser::ReadoutParserCounters &counters)
 {
     const uint8_t subtype = mvlc::system_event::extract_subtype(header[0]);
 
@@ -53,6 +53,17 @@ void RunRecorder::systemEvent(const uint32_t *header, uint32_t size, const parse
 
     const uint64_t seconds = header[1] | (static_cast<uint64_t>(header[2]) << 32);
     runTimes.record(subtype, static_cast<int64_t>(seconds));
+    timeline.record(subtype, static_cast<int64_t>(seconds), readout_events(counters), counters.ethPacketLoss);
+}
+
+void RunRecorder::finish(const parser::ReadoutParserCounters &counters)
+{
+    if (counters.ethPacketLoss != lastLoss_)
+    {
+        ++lossBursts;
+        lastLoss_ = counters.ethPacketLoss;
+    }
+    timeline.finish(readout_events(counters), counters.ethPacketLoss);
 }
 
 parser::ReadoutParserState make_listfile_parser(const ListfileInfo &listfile, const VMEConfig &vmeConfig)

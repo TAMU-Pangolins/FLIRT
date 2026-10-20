@@ -40,7 +40,8 @@ struct PipelineResult
     // included), i.e. run_pipeline() minus the time spent in the sink.
     double producerSeconds = 0;
     // BeginRun, EndRun, UnixTimetick, Pause and Resume sections as the parser
-    // delivered them, the preamble's BeginRun included (run_summary.h).
+    // delivered them, the preamble's BeginRun included (run_summary.h), the
+    // rate over time and the loss bursts (listfile_scan.h).
     RunRecorder run;
 };
 

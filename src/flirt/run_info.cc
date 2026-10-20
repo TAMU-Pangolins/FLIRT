@@ -1,5 +1,8 @@
 #include "flirt/run_info.h"
 
+#include <cstdio>
+#include <ctime>
+
 namespace mvlc = mesytec::mvlc;
 namespace parser = mesytec::mvlc::readout_parser;
 using json = nlohmann::json;
@@ -42,6 +45,38 @@ json settings_changes_json(const SettingsChanges &sc)
              {"mvmeVersion", sc.mvmeVersion}, {"changes", changes} };
 }
 
+json flag_json(const RateFlag &flag)
+{
+    switch (flag.kind)
+    {
+        case RateFlag::Kind::Paused:
+            return { {"kind", "paused"}, {"from", iso8601_local(flag.from)}, {"to", time_or_null(flag.to)} };
+        case RateFlag::Kind::LowRate:
+            return { {"kind", "lowRate"}, {"from", iso8601_local(flag.from)}, {"to", time_or_null(flag.to)} };
+        case RateFlag::Kind::Step:
+            return { {"kind", "step"}, {"at", iso8601_local(flag.from)}, {"before", flag.before},
+                     {"after", flag.after} };
+    }
+    return nullptr;
+}
+
+// "2026-03-03T14:31:00-06:00" (iso8601_local) -> Unix seconds; nullopt if
+// not that form.
+std::optional<int64_t> parse_iso8601(const json &value)
+{
+    if (!value.is_string())
+        return std::nullopt;
+    int y, mo, d, h, mi, sec, oh, om;
+    char sign;
+    if (std::sscanf(value.get<std::string>().c_str(), "%d-%d-%dT%d:%d:%d%c%d:%d", &y, &mo, &d, &h, &mi, &sec,
+                    &sign, &oh, &om) != 9 || (sign != '+' && sign != '-'))
+        return std::nullopt;
+    struct tm tm = {};
+    tm.tm_year = y - 1900, tm.tm_mon = mo - 1, tm.tm_mday = d, tm.tm_hour = h, tm.tm_min = mi, tm.tm_sec = sec;
+    const int64_t offset = (sign == '-' ? -1 : 1) * (oh * 3600 + om * 60);
+    return static_cast<int64_t>(timegm(&tm)) - offset;
+}
+
 template <typename T>
 std::optional<T> optional_of(const json &object, const char *key)
 {
@@ -71,6 +106,7 @@ RunFacts run_facts(const ListfileInfo &listfile, const parser::ReadoutParserCoun
 {
     RunFacts facts;
     facts.times = recorder.runTimes.result();
+    facts.rate = recorder.timeline.analyze(facts.times);
     facts.counters = counters;
     facts.events = readout_events(counters);
     facts.connection = listfile.format;
@@ -93,6 +129,30 @@ RunFacts run_facts_from_json(const json &run)
 
     for (const auto &event: run.value("events", json::array()))
         facts.events += event.value("readoutEvents", uint64_t(0));
+
+    for (const auto &bin: run.value("minutes", json::array()))
+    {
+        MinuteBin b;
+        b.start = parse_iso8601(bin.value("start", json())).value_or(0);
+        b.liveSeconds = bin.value("liveSeconds", int64_t(0));
+        b.events = bin.value("events", uint64_t(0));
+        b.lostPackets = bin.value("lostPackets", uint64_t(0));
+        facts.rate.minutes.push_back(b);
+    }
+    const auto rate = run.value("rate", json::object());
+    facts.rate.median = optional_of<double>(rate, "medianPerSecond");
+    for (const auto &f: rate.value("flags", json::array()))
+    {
+        RateFlag flag;
+        const auto kind = f.value("kind", std::string());
+        flag.kind = kind == "lowRate" ? RateFlag::Kind::LowRate : kind == "step" ? RateFlag::Kind::Step
+                                                                                 : RateFlag::Kind::Paused;
+        flag.from = parse_iso8601(f.value(flag.kind == RateFlag::Kind::Step ? "at" : "from", json())).value_or(0);
+        flag.to = parse_iso8601(f.value("to", json()));
+        flag.before = f.value("before", 0.0);
+        flag.after = f.value("after", 0.0);
+        facts.rate.flags.push_back(flag);
+    }
 
     const auto sc = run.value("settingsChanges", json::object());
     facts.settings.checked = sc.value("checked", false);
@@ -141,13 +201,24 @@ json run_json(const RunFacts &facts, const VMEConfig &vmeConfig)
         }
     }
 
+    json flags = json::array();
+    for (const auto &flag: facts.rate.flags)
+        flags.push_back(flag_json(flag));
+
+    json minutes = json::array();
+    for (const auto &bin: facts.rate.minutes)
+        minutes.push_back({ {"start", iso8601_local(bin.start)}, {"liveSeconds", bin.liveSeconds},
+                            {"events", bin.events}, {"lostPackets", bin.lostPackets} });
+
     return { {"start", time_or_null(times.start)}, {"stop", time_or_null(times.stop)},
              {"startUnix", or_null(times.start)}, {"stopUnix", or_null(times.stop)},
              {"startFrom", text_or_null(times.startFrom)}, {"stopFrom", text_or_null(times.stopFrom)},
              {"durationSeconds", or_null(times.duration)}, {"pauses", times.pauses},
              {"pausedSeconds", or_null(times.paused)}, {"liveSeconds", or_null(times.live)},
              {"events", events}, {"modules", modules},
-             {"settingsChanges", settings_changes_json(facts.settings)} };
+             {"settingsChanges", settings_changes_json(facts.settings)},
+             {"rate", { {"medianPerSecond", or_null(facts.rate.median)}, {"flags", flags} }},
+             {"minutes", minutes} };
 }
 
 }

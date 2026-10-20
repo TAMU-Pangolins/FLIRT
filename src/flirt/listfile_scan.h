@@ -5,6 +5,7 @@
 
 #include "flirt/listfile.h"
 #include "flirt/run_summary.h"
+#include "flirt/run_timeline.h"
 #include "flirt/vme_config.h"
 
 namespace flirt
@@ -21,7 +22,27 @@ class RunRecorder
         void systemEvent(const uint32_t *header, uint32_t size,
                          const mesytec::mvlc::readout_parser::ReadoutParserCounters &counters);
 
+        // The parser's eventData callback, once per readout event, before any
+        // multi-event splitting: a loss burst is each growth of ethPacketLoss
+        // (counted at mvlc_readout_parser.cc:1258-1270) since the previous event.
+        void eventData(const mesytec::mvlc::readout_parser::ReadoutParserCounters &counters)
+        {
+            if (counters.ethPacketLoss != lastLoss_)
+            {
+                ++lossBursts;
+                lastLoss_ = counters.ethPacketLoss;
+            }
+        }
+
+        // After the last buffer: loss after the last event, and the timeline's totals.
+        void finish(const mesytec::mvlc::readout_parser::ReadoutParserCounters &counters);
+
         RunTimeAccumulator runTimes;
+        RunTimeline timeline;
+        uint64_t lossBursts = 0;
+
+    private:
+        uint32_t lastLoss_ = 0;
 };
 
 // Sum of the parser's eventHits: the readout events so far.
