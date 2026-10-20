@@ -54,7 +54,7 @@ struct usage_error: std::runtime_error
 
 void usage(const char *argv0)
 {
-    std::cerr << "usage: " << argv0 << " <input>... -o <outdir> [-j N]"
+    std::cerr << "usage: " << argv0 << " <input>... -o <outdir> [-j N] [--list <file>]"
               << " [--dither-offset <N>]"
               << " [--accept-damaged-input]\n"
               << "\n"
@@ -63,10 +63,14 @@ void usage(const char *argv0)
               << "--single-run for recordings of mvme 1.16.2-1.18.0 with one VME event, no event\n"
               << "builder, and the modules mdpp32_scp, mdpp32_qdc and mvlc_event_stamper (README,\n"
               << "\"Tested with\"); for anything else, compare one run against it first.\n"
+              << "An input is a listfile archive or a directory, which gives its *.zip files\n"
+              << "(not recursive, in natural order).\n"
               << "\n"
               << "  -o, --output-dir    existing directory for the outputs\n"
               << "  -j N                convert up to N listfiles at once (default: 1, one run at\n"
               << "                      a time)\n"
+              << "  --list <file>       inputs, one per line; blank lines and lines starting\n"
+              << "                      with # are ignored (repeatable)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
               << "                      mvme_root_client --single-run (default: 0)\n"
               << "  --accept-damaged-input\n"
@@ -125,9 +129,41 @@ uint64_t parse_number(const std::string &opt, const std::string &text)
     }
 }
 
+// A listfile or a directory's listfiles (add_listfile_input, common/names.h).
+void add_input(const std::string &path, std::vector<std::string> &inputs)
+{
+    try
+    {
+        add_listfile_input(path, inputs);
+    }
+    catch (const std::runtime_error &e)
+    {
+        throw usage_error(e.what());
+    }
+}
+
+void add_list(const std::string &listFile, std::vector<std::string> &inputs)
+{
+    std::ifstream in(listFile);
+    if (!in)
+        throw usage_error("cannot read list file " + listFile);
+
+    std::string line;
+    while (std::getline(in, line))
+    {
+        const auto first = line.find_first_not_of(" \t\r");
+        if (first == std::string::npos || line[first] == '#')
+            continue;
+        const auto last = line.find_last_not_of(" \t\r");
+        add_input(line.substr(first, last - first + 1), inputs);
+    }
+}
+
 Options parse_args(int argc, char *argv[])
 {
     Options opt;
+    // Expanded after all options are read.
+    std::vector<std::pair<bool, std::string>> sources;    // (a --list file, path)
 
     for (int i = 1; i < argc; ++i)
     {
@@ -146,15 +182,23 @@ Options parse_args(int argc, char *argv[])
                 throw usage_error("-j must be between 1 and 1024");
             opt.jobs = static_cast<unsigned>(jobs);
         }
+        else if (arg == "--list") sources.emplace_back(true, value());
         else if (arg == "--dither-offset")
         {
             opt.ditherOffset = parse_number(arg, value());
         }
         else if (arg == "--accept-damaged-input") opt.acceptDamagedInput = true;
         else if (!arg.empty() && arg[0] == '-') throw usage_error("unknown option " + arg, true);
-        else opt.inputs.push_back(arg);
+        else sources.emplace_back(false, arg);
     }
 
+    for (const auto &[isList, path]: sources)
+    {
+        if (isList)
+            add_list(path, opt.inputs);
+        else
+            add_input(path, opt.inputs);
+    }
     if (opt.inputs.empty())
         throw usage_error("no inputs", true);
 
