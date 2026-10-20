@@ -2,6 +2,7 @@ add_library(flirt STATIC
     listfile.cc
     module_templates.cc
     vme_config.cc
+    analysis_config.cc
     )
 target_include_directories(flirt PUBLIC ${CMAKE_SOURCE_DIR}/src
     ${MVME_SRC} ${MVME_EXT}/nlohmann-json)
