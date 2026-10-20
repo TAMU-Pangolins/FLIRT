@@ -28,9 +28,12 @@
 #include <chrono>
 #include <climits>
 #include <csignal>
+#include <cstring>
 #include <fcntl.h>
+#include <fstream>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
@@ -163,11 +166,13 @@ void throw_if_stop_requested()
 void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <listfile.zip> -o <outdir>"
+              << " [--analysis <file.analysis>]"
               << " [--experiment-name <name>] [--experiment-title <title>]"
               << " [--dither-offset <N>] [--threads <T>] [--no-waveforms]"
               << " [--official-waveform-branches]"
               << " [--accept-damaged-input] [--progress-fd <N>]\n"
               << "\n"
+              << "  --analysis          use this mvme analysis instead of the one in the archive\n"
               << "  --experiment-name   mvme workspace setting Experiment/Name (default: Experiment)\n"
               << "  --experiment-title  mvme workspace setting Experiment/Title (default: empty)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
@@ -185,6 +190,25 @@ void usage(const char *argv0)
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
               << "  --progress-fd <N>   (internal, used by the batch) write progress lines to fd N\n";
+}
+
+// Read with the path's own bytes: QString::fromStdString would turn a name
+// that is not valid UTF-8 into another name (docs/design.md, "Text that is
+// not valid UTF-8").
+std::string read_file(const std::string &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    std::ostringstream text;
+    if (!in)
+        throw std::runtime_error("cannot read " + path);
+    text << in.rdbuf();
+    return text.str();
+}
+
+std::string sha256_hex(const std::string &data)
+{
+    return QCryptographicHash::hash(QByteArray::fromStdString(data), QCryptographicHash::Sha256)
+        .toHex().toStdString();
 }
 
 std::string real_path(const std::string &path)
@@ -553,7 +577,7 @@ int convert_one(int argc, char *argv[])
 {
     install_hangup_handler();
 
-    std::string input, outDir;
+    std::string input, outDir, analysisFile;
     bool acceptDamagedInput = false;
     bool noWaveforms = false;
     bool officialWaveformBranches = false;
@@ -572,6 +596,7 @@ int convert_one(int argc, char *argv[])
         };
 
         if (arg == "-o" || arg == "--output-dir") outDir = value();
+        else if (arg == "--analysis") analysisFile = value();
         else if (arg == "--experiment-name") runInfo.experimentName = value();
         else if (arg == "--experiment-title") runInfo.experimentTitle = value();
         else if (arg == "--dither-offset") rootOpts.ditherOffset = std::stoull(value());
@@ -634,6 +659,9 @@ int convert_one(int argc, char *argv[])
 
         // I5: identities of the input files before anything reads them.
         const auto inputIdentity = flirt::file_identity(input);
+        flirt::FileIdentity analysisIdentity;
+        if (!analysisFile.empty())
+            analysisIdentity = flirt::file_identity(analysisFile);
 
         // Absolute: the writer changes the working directory while it runs.
         BackgroundSha256 inputSha256(flirt::absolute_path(input));
@@ -668,15 +696,28 @@ int convert_one(int argc, char *argv[])
         const auto &embedded = listfile.analysisEntry;
         std::string analysisText;
 
-        if (embedded.entry.empty())
-            throw flirt::unsupported_input("archive contains no analysis.analysis");
+        if (!analysisFile.empty())
+        {
+            analysisText = read_file(analysisFile);
 
-        checks.set(check::AnalysisEntry, embedded.result(), embedded.detail());
+            if (embedded.entry.empty())
+                checks.set(check::AnalysisEntry, "pass", "archive has no analysis.analysis; --analysis in use");
+            else
+                checks.set(check::AnalysisEntry, embedded.result() == "pass" ? "pass" : "warn",
+                           embedded.detail() + " (not in use: --analysis)");
+        }
+        else
+        {
+            if (embedded.entry.empty())
+                throw flirt::unsupported_input("archive contains no analysis.analysis; use --analysis");
 
-        if (checks.failed() && !acceptDamagedInput)
-            return refuse_to_publish(checks, true);
+            checks.set(check::AnalysisEntry, embedded.result(), embedded.detail());
 
-        analysisText = listfile.analysisJson;
+            if (checks.failed() && !acceptDamagedInput)
+                return refuse_to_publish(checks, true);
+
+            analysisText = listfile.analysisJson;
+        }
 
         auto analysis = flirt::parse_analysis(analysisText, vmeConfig);
         const auto samplingSettings = flirt::sampling_settings(vmeConfig, analysis);
@@ -730,6 +771,8 @@ int convert_one(int argc, char *argv[])
             {
                 if (same_file(out, inputIdentity))
                     clash = out + " is the input listfile";
+                else if (!analysisFile.empty() && same_file(out, analysisIdentity))
+                    clash = out + " is the input analysis";
             }
 
             if (!clash.empty())
@@ -847,6 +890,8 @@ int convert_one(int argc, char *argv[])
             std::string changed;
             if (!still_unchanged(input, inputIdentity))
                 changed = input;
+            if (!analysisFile.empty() && !still_unchanged(analysisFile, analysisIdentity))
+                changed += (changed.empty() ? "" : ", ") + analysisFile;
 
             checks.set(check::InputUnchanged, changed.empty() ? "pass" : "fail",
                        changed.empty() ? "size, modification time and inode unchanged"
@@ -875,8 +920,10 @@ int convert_one(int argc, char *argv[])
                             {"size", static_cast<int64_t>(inputIdentity.size)},
                             {"mtimeNs", static_cast<int64_t>(inputIdentity.mtime.tv_sec) * 1000000000
                                         + inputIdentity.mtime.tv_nsec} };
-        report["analysis"] = { {"source", std::string("archive analysis.analysis")},
-                               {"sha256", es::json(nullptr)},
+        report["analysis"] = { {"source", !analysisFile.empty() ? real_path(analysisFile)
+                                                         : std::string("archive analysis.analysis")},
+                               {"sha256", analysisFile.empty() ? es::json(nullptr)
+                                                               : es::json(sha256_hex(analysisText))},
                                {"version", analysis.version} };
         report["options"] = { {"experimentName", runInfo.experimentName},
                               {"experimentTitle", runInfo.experimentTitle},

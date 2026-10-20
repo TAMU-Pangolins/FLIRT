@@ -145,6 +145,11 @@ Failure unsupported(const std::string &what, FailureFor where)
         f.headline = "not an MVLC listfile FLIRT can read";
         f.todo = "FLIRT converts mvme's MVLC listfiles only. " + mvme;
     }
+    else if (starts_with(what, "archive contains no analysis.analysis"))
+    {
+        f.headline = "the archive holds no analysis";
+        f.todo = "Choose an analysis: " + name(where, "Analysis → Another file...", "--analysis <file>") + ".";
+    }
     else if (starts_with(what, "modules '") && contains(what, "would both get the waveform tree"))
     {
         f.headline = "two modules would get the same waveform tree";

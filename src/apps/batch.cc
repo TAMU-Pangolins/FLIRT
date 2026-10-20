@@ -72,7 +72,7 @@ struct usage_error: std::runtime_error
 void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <input>... -o <outdir> [-j N] [--list <file>]"
-              << " [--summary <file.json>]"
+              << " [--summary <file.json>] [--analysis <file.analysis>]"
               << " [--experiment-name <name>] [--experiment-title <title>]"
               << " [--dither-offset <N>] [--threads <T>] [--no-waveforms] [--official-waveform-branches]"
               << " [--accept-damaged-input] [--json-events]\n"
@@ -97,6 +97,7 @@ void usage(const char *argv0)
               << "                      with # are ignored (repeatable)\n"
               << "  --summary <file>    also write the summary as JSON to this new file (exit\n"
               << "                      code 1 if it cannot be written)\n"
+              << "  --analysis          use this mvme analysis instead of the one in the archive\n"
               << "  --experiment-name   mvme workspace setting Experiment/Name (default: Experiment)\n"
               << "  --experiment-title  mvme workspace setting Experiment/Title (default: empty)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
@@ -133,6 +134,7 @@ struct Options
     unsigned jobs = 1;
     unsigned threads = 1;   // per child; informational, not part of the skip rule
     std::string summaryPath;
+    std::string analysisFile, analysisSha256;
     std::string experimentName = "Experiment", experimentTitle;
     uint64_t ditherOffset = 0;
     bool noWaveforms = false;
@@ -252,6 +254,20 @@ void add_list(const std::string &listFile, std::vector<std::string> &inputs)
     }
 }
 
+std::string sha256_of_file(const std::string &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        throw usage_error("cannot read analysis file " + path);
+    std::ostringstream data;
+    data << in.rdbuf();
+    if (in.bad())
+        throw usage_error("cannot read analysis file " + path);
+    const auto bytes = data.str();
+    return QCryptographicHash::hash(QByteArray(bytes.data(), static_cast<int>(bytes.size())),
+                                    QCryptographicHash::Sha256).toHex().toStdString();
+}
+
 Options parse_args(int argc, char *argv[])
 {
     Options opt;
@@ -298,6 +314,7 @@ Options parse_args(int argc, char *argv[])
             settleGiven = true;
         }
         else if (arg == "--summary") opt.summaryPath = value();
+        else if (arg == "--analysis") opt.analysisFile = value();
         else if (arg == "--experiment-name") opt.experimentName = value();
         else if (arg == "--experiment-title") opt.experimentTitle = value();
         else if (arg == "--dither-offset")
@@ -365,6 +382,12 @@ Options parse_args(int argc, char *argv[])
                               + (opt.outDir == opt.watchDir ? " is the watched directory" : " is inside the watched directory "
                                  + opt.watchDir)
                               + "; the watch writes nothing there: choose an output directory outside it");
+    }
+
+    if (!opt.analysisFile.empty())
+    {
+        check_name("--analysis", opt.analysisFile);
+        opt.analysisSha256 = sha256_of_file(opt.analysisFile);
     }
 
     if (!opt.summaryPath.empty())
@@ -478,6 +501,14 @@ Mismatch mismatch(const Options &opt, const Run &run)
     {
         const std::string note = "the input's size or modification time differs from the report's";
         return differs(note, "from another version of the input file", note);
+    }
+
+    const json analysis = opt.analysisFile.empty() ? json(nullptr) : json(opt.analysisSha256);
+    if (at("/analysis/sha256") != analysis)
+    {
+        const auto note = opt.analysisFile.empty() ? std::string("the report's analysis is not the archive's")
+                                                   : "the report's analysis is not " + opt.analysisFile;
+        return { note, "its files exist and the analysis differs", "its files exist with another analysis", note };
     }
 
     // The report holds the strings cleaned of invalid UTF-8 (common/utf8.h):
@@ -670,6 +701,8 @@ bool launch(Run &run, const Options &opt, const char *argv0)
         args.push_back("--no-waveforms");
     if (opt.officialWaveformBranches)
         args.push_back("--official-waveform-branches");
+    if (!opt.analysisFile.empty())
+        args.insert(args.end(), { "--analysis", opt.analysisFile });
     if (opt.acceptDamagedInput)
         args.push_back("--accept-damaged-input");
 
@@ -986,6 +1019,8 @@ RunBlock block_of(const Run &run, const Options &opt)
 json options_json(const Options &opt)
 {
     return { {"outputDir", opt.outDir}, {"jobs", opt.jobs}, {"threads", opt.threads},
+             {"analysis", opt.analysisFile.empty() ? json(nullptr) : json(opt.analysisFile)},
+             {"analysisSha256", opt.analysisFile.empty() ? json(nullptr) : json(opt.analysisSha256)},
              {"experimentName", opt.experimentName}, {"experimentTitle", opt.experimentTitle},
              {"ditherOffset", opt.ditherOffset},
              {"noWaveforms", opt.noWaveforms},
