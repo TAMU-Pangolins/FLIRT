@@ -45,12 +45,19 @@ struct PipelineResult
 // may take the batch's messages (e.g. by swapping); the batch is reused after.
 using BatchSink = std::function<void (MessageBatch &batch)>;
 
+// Called on the producer thread after each readout buffer is processed:
+// bytesProcessed is the sum of the processed buffers' sizes, bytesTotal the
+// listfile entry's declared uncompressed size (0 if unknown).
+using ProgressFn = std::function<void (uint64_t bytesProcessed, uint64_t bytesTotal)>;
+
 // Producer: replays the listfile through the readout parser and the
 // extractor. Hands the sink BeginRun, then the EventData messages of each
 // readout buffer, then EndRun. Uses no ROOT and no gRandom.
+//
+// progress: see ProgressFn; empty for none.
 PipelineResult run_pipeline(const ListfileInfo &listfile, const VMEConfig &vmeConfig,
                             const AnalysisConfig &analysis, const RunInfo &runInfo,
-                            const BatchSink &sink);
+                            const BatchSink &sink, const ProgressFn &progress = {});
 
 }
 

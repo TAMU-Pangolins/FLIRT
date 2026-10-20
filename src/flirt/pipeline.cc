@@ -62,7 +62,7 @@ constexpr size_t ReadoutBufferSize = 1024 * 1024;
 
 PipelineResult run_pipeline(const ListfileInfo &listfile, const VMEConfig &vmeConfig,
                             const AnalysisConfig &analysis, const RunInfo &runInfo,
-                            const BatchSink &sink)
+                            const BatchSink &sink, const ProgressFn &progress)
 {
     const auto tStart = std::chrono::steady_clock::now();
     PipelineResult result;
@@ -159,6 +159,10 @@ PipelineResult run_pipeline(const ListfileInfo &listfile, const VMEConfig &vmeCo
     mvlc::ReadoutBufferQueues queues(ReadoutBufferSize, ReadoutBufferCount);
     mvlc::ReplayWorker replay(queues, &readHandle);
 
+    // For progress only; read before the replay thread starts reading.
+    const uint64_t bytesTotal = readHandle.check().declaredKnown ? readHandle.check().declaredSize : 0;
+    uint64_t bytesProcessed = 0;
+
     if (auto ec = replay.start().get())
         throw std::runtime_error("replay start failed: " + ec.message());
 
@@ -190,10 +194,14 @@ PipelineResult run_pipeline(const ListfileInfo &listfile, const VMEConfig &vmeCo
         if (!processingOk)
             ++result.buffersWithErrors;
 
+        bytesProcessed += buffer->used();
         queues.emptyBufferQueue().enqueue(buffer);
 
         if (batch.size)
             deliver();
+
+        if (progress)
+            progress(bytesProcessed, bytesTotal);
     };
 
     try

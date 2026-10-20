@@ -15,10 +15,15 @@
 // published with the report last (RootWriter::publish), so a report means a
 // complete set. SIGHUP stays ignored if it was ignored when the process started
 // (nohup).
+//
+// --progress-fd <N> (internal, given by the batch parent): progress lines on
+// fd N, `progress <bytesProcessed> <bytesTotal>` while the listfile is
+// replayed, then `finishing`.
 
 #include <QCryptographicHash>
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <climits>
@@ -104,6 +109,40 @@ void install_stop_handlers()
         install_stop_handler(SIGHUP);
 }
 
+// Progress lines for the batch parent (--progress-fd): one write(2) per line,
+// nothing more after a failed write; never fails the conversion.
+class ProgressWriter
+{
+    public:
+        explicit ProgressWriter(int fd): fd_(fd) { }
+
+        // At most every 0.5 s, the first on the first call.
+        void progress(uint64_t processed, uint64_t total)
+        {
+            if (fd_ < 0)
+                return;
+            const auto now = Clock::now();
+            if (written_ && now - last_ < std::chrono::milliseconds(500))
+                return;
+            last_ = now;
+            written_ = true;
+            line("progress " + std::to_string(processed) + " " + std::to_string(total) + "\n");
+        }
+
+        void finishing() { line("finishing\n"); }
+
+    private:
+        void line(const std::string &text)
+        {
+            if (fd_ >= 0 && write(fd_, text.data(), text.size()) != static_cast<ssize_t>(text.size()))
+                fd_ = -1;
+        }
+
+        int fd_;
+        bool written_ = false;
+        Clock::time_point last_;
+};
+
 struct interrupted: std::runtime_error
 {
     interrupted(): std::runtime_error("interrupted") { }
@@ -118,13 +157,14 @@ void throw_if_stop_requested()
 void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <listfile.zip> -o <outdir>"
-              << " [--dither-offset <N>] [--accept-damaged-input]\n"
+              << " [--dither-offset <N>] [--accept-damaged-input] [--progress-fd <N>]\n"
               << "\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
               << "                      mvme_root_client --single-run (default: 0)\n"
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
-              << "                      report lists the failed checks\n";
+              << "                      report lists the failed checks\n"
+              << "  --progress-fd <N>   (internal, used by the batch) write progress lines to fd N\n";
 }
 
 std::string real_path(const std::string &path)
@@ -327,6 +367,7 @@ int convert_one(int argc, char *argv[])
     std::string input, outDir;
     bool acceptDamagedInput = false;
     bool published = false;
+    int progressFd = -1;
     flirt::RunInfo runInfo;
     flirt::RootOutputOptions rootOpts;
 
@@ -340,6 +381,16 @@ int convert_one(int argc, char *argv[])
 
         if (arg == "-o" || arg == "--output-dir") outDir = value();
         else if (arg == "--dither-offset") rootOpts.ditherOffset = std::stoull(value());
+        else if (arg == "--progress-fd")
+        {
+            const auto text = value();
+            if (text.empty() || text.size() > 6 || !std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isdigit(c); }))
+            {
+                usage(argv[0]);
+                return 2;
+            }
+            progressFd = std::stoi(text);
+        }
         else if (arg == "--accept-damaged-input") acceptDamagedInput = true;
         else if (arg == "-h" || arg == "--help") { usage(argv[0]); return 0; }
         else if (!arg.empty() && arg[0] == '-') { usage(argv[0]); return 2; }
@@ -351,6 +402,18 @@ int convert_one(int argc, char *argv[])
     {
         usage(argv[0]);
         return 2;
+    }
+
+    // Checked before any file is opened: a closed fd would be reused by a later
+    // open, possibly an output file, and the progress lines written into it.
+    if (progressFd >= 0)
+    {
+        const int flags = fcntl(progressFd, F_GETFL);
+        if (flags < 0 || (flags & O_ACCMODE) == O_RDONLY)
+        {
+            std::cerr << "error: --progress-fd " << progressFd << " is not open for writing\n";
+            return 2;
+        }
     }
 
     try
@@ -468,12 +531,19 @@ int convert_one(int argc, char *argv[])
                                              writer.handleBatch(batch);
                                          });
 
+            ProgressWriter progress(progressFd);
             pipeline = flirt::run_pipeline(listfile, vmeConfig, analysis, runInfo,
                                            [&](flirt::MessageBatch &batch)
                                            {
                                                throw_if_stop_requested();
                                                consumer.push(batch);
+                                           },
+                                           progressFd < 0 ? flirt::ProgressFn() :
+                                           [&](uint64_t processed, uint64_t total)
+                                           {
+                                               progress.progress(processed, total);
                                            });
+            progress.finishing();
             consumer.finish();
         }
         writer.close();

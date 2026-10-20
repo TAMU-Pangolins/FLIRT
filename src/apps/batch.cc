@@ -34,6 +34,7 @@
 #include "common/utf8.h"
 #include "flirt/listfile.h"
 #include "flirt_version.h"
+#include "progress.h"
 
 extern char **environ;
 
@@ -110,9 +111,15 @@ struct Run
     double seconds = 0;
     pid_t pid = 0;
     FILE *log = nullptr;    // the child's stdout and stderr
+    int progressFd = -1;    // the child's progress lines (its fd 3)
+    ProgressReader progress;
     Clock::time_point start;
     bool convert = false;   // this batch converts it (not skipped or refused)
+    uint64_t bytes = 0;     // input size, for the progress estimate
     bool diskFull = false;  // the child said "No space left on device"
+    std::string eventPhase; // --json-events: the last progress event's phase and percent
+    int eventPercent = -1;
+    Clock::time_point eventTime;
 };
 
 const char *const Results[] = { "converted", "failed", "unsupported", "interrupted", "not-started" };
@@ -306,8 +313,8 @@ int temp_file_in(const std::string &dir)
 }
 
 // Starts `<exe> --convert-one <input> -o <outDir> [conversion options]`, its
-// stdout and stderr going to an unlinked temporary file in <outDir>. False on
-// failure.
+// stdout and stderr going to an unlinked temporary file in <outDir>, its
+// progress lines to another one on its fd 3. False on failure.
 bool launch(Run &run, const Options &opt, const char *argv0)
 {
     run.start = Clock::now();
@@ -319,16 +326,31 @@ bool launch(Run &run, const Options &opt, const char *argv0)
         close(logFd);
         errno = err;
     }
-    if (!run.log)
+    const int progressFile = run.log ? temp_file_in(opt.outDir) : -1;
+    if (progressFile >= 0)
+    {
+        // Not fd 3: glibc 2.28's posix_spawn does not clear FD_CLOEXEC in a
+        // dup2 whose source is its target.
+        run.progressFd = fcntl(progressFile, F_DUPFD_CLOEXEC, 10);
+        const int err = errno;
+        close(progressFile);
+        errno = err;
+    }
+    if (!run.log || run.progressFd < 0)
     {
         run.note = "cannot create a temporary file in " + printable_text(opt.outDir) + ": "
                    + std::strerror(errno);
+        if (run.log)
+            fclose(run.log);
+        run.log = nullptr;
         return false;
     }
+    run.progress = ProgressReader(run.progressFd);
     const int fd = fileno(run.log);
     fcntl(fd, F_SETFD, FD_CLOEXEC); // other children must not inherit it
 
-    std::vector<std::string> args = { argv0, "--convert-one", run.input, "-o", opt.outDir };
+    std::vector<std::string> args = { argv0, "--convert-one", run.input, "-o", opt.outDir,
+                                      "--progress-fd", "3" };
     args.insert(args.end(), { "--dither-offset", std::to_string(opt.ditherOffset) });
     if (opt.acceptDamagedInput)
         args.push_back("--accept-damaged-input");
@@ -343,6 +365,8 @@ bool launch(Run &run, const Options &opt, const char *argv0)
     posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
     posix_spawn_file_actions_adddup2(&actions, fd, 1);
     posix_spawn_file_actions_adddup2(&actions, fd, 2);
+    // After the log's: the log may be fd 3 here.
+    posix_spawn_file_actions_adddup2(&actions, run.progressFd, 3);
 
     // The parent blocks these signals to wait for them; the child starts with
     // none blocked and default actions.
@@ -366,6 +390,8 @@ bool launch(Run &run, const Options &opt, const char *argv0)
     {
         fclose(run.log);
         run.log = nullptr;
+        close(run.progressFd);
+        run.progressFd = -1;
         run.pid = 0;
         run.note = std::string("cannot start the conversion: ") + std::strerror(err);
         return false;
@@ -399,6 +425,9 @@ void finish(Run &run, int status, bool stopping, const Options &opt, const Say &
     std::istringstream output(log);
     fclose(run.log);
     run.log = nullptr;
+    close(run.progressFd);
+    run.progressFd = -1;
+    run.progress = ProgressReader();
     run.pid = 0;
 
     // The note: the first error, refusal or failed check the child printed.
@@ -718,6 +747,8 @@ int run_batch(int argc, char *argv[])
             return false;
         }
 
+        struct stat st;
+        run.bytes = stat(run.input.c_str(), &st) == 0 ? static_cast<uint64_t>(st.st_size) : 0;
         run.convert = true;
         return true;
     };
@@ -733,13 +764,34 @@ int run_batch(int argc, char *argv[])
     {
         json plan = json::array();
         for (const auto &run: runs)
-            plan.push_back({ {"runId", run.runId}, {"input", run.input},
+            plan.push_back({ {"runId", run.runId}, {"input", run.input}, {"bytes", run.bytes},
                              {"action", run.convert ? "convert" : run.result} });
         events.send("plan", { {"runs", plan} });
         for (const auto &run: runs)
             if (!run.convert)
                 events.send("result", result_json(opt, run));
     }
+
+    // A progress event when the phase changes, and when the whole percent
+    // changes but at most once per second.
+    auto progress_event = [&](Run &run, bool launched)
+    {
+        if (!events.on())
+            return;
+        const auto &state = run.progress.state();
+        const char *phase = launched || state.phase == ProgressState::Phase::Starting ? "starting"
+            : state.phase == ProgressState::Phase::Progress ? "converting" : "finishing";
+        const int percent = launched ? -1 : state.percent();
+        const auto now = Clock::now();
+        if (run.eventPhase == phase
+            && (percent == run.eventPercent || now - run.eventTime < std::chrono::seconds(1)))
+            return;
+        run.eventPhase = phase;
+        run.eventPercent = percent;
+        run.eventTime = now;
+        events.send("progress", { {"runId", run.runId}, {"phase", phase},
+                                  {"percent", percent < 0 ? json(nullptr) : json(percent)} });
+    };
 
     // At most opt.jobs children at a time.
     bool stopping = false;
@@ -759,6 +811,21 @@ int run_batch(int argc, char *argv[])
             kill(run->pid, SIGTERM);
     };
 
+    // The runs this batch converts, running ones with their progress.
+    auto show_progress = [&]()
+    {
+        for (auto &run: runs)
+        {
+            if (!run.convert)
+                continue;
+            if (run.pid)
+            {
+                run.progress.poll();
+                progress_event(run, false);
+            }
+        }
+    };
+
     auto wait_signal = [&](long nanoseconds) -> bool
     {
         timespec timeout = { nanoseconds / 1000000000, nanoseconds % 1000000000 };
@@ -771,6 +838,9 @@ int run_batch(int argc, char *argv[])
     while (true)
     {
         while (wait_signal(0)) { }
+
+        // Before reaping, so a run's last progress lines are shown.
+        show_progress();
 
         for (auto it = running.begin(); it != running.end();)
         {
@@ -796,6 +866,7 @@ int run_batch(int argc, char *argv[])
             if (launch(run, opt, argv[0]))
             {
                 running.push_back(&run);
+                progress_event(run, true);
             }
             else
             {
@@ -809,6 +880,7 @@ int run_batch(int argc, char *argv[])
         if (running.empty() && (stopping || queue.empty()))
             break;
 
+        show_progress();
         // A quarter second while conversions run.
         long wait = 250000000;
         wait_signal(wait);
