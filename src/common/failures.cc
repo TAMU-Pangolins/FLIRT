@@ -235,12 +235,20 @@ Failure explain_failure(const std::string &result, const std::string &note, bool
 {
     Failure f;
     std::string check, checkResult, detail;
+    if (result == "outputs-exist")
+    {
+        f.headline = "output files exist · not converted";
+        f.why = note;
+        f.todo = name(where, "Remove them, or choose another output folder.",
+                      "Remove them, or choose another output folder (-o).");
+        return f;
+    }
     if (result == "interrupted")
     {
         f.headline = "stopped before it finished";
         f.why = note.empty() ? "nothing was published" : note;
         f.todo = name(where, "Convert again (s) to finish it.",
-                      "Run the same command again.");
+                      "Run the same command again: runs already converted are skipped.");
         return f;
     }
     if (result == "unsupported")

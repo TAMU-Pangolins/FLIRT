@@ -26,7 +26,7 @@ struct Failure
 // flirt-convert its flags.
 enum class FailureFor { Tui, Cli };
 
-// For result failed, unsupported or interrupted; any other
+// For result failed, unsupported, interrupted or outputs-exist; any other
 // result gives an empty Failure. diskFull: the run's messages said "No space
 // left on device" (src/apps/batch.cc finish()).
 Failure explain_failure(const std::string &result, const std::string &note, bool diskFull, FailureFor where);

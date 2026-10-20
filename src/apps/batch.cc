@@ -3,8 +3,11 @@
 // Each listfile is converted by a child process, this same executable with
 // --convert-one, so every conversion has fresh ROOT state (gROOT, gRandom),
 // exactly like a fresh `mvme_root_client --single-run`. The parent itself never
-// initializes ROOT. Outputs are never deleted or overwritten.
+// initializes ROOT. Outputs are never deleted or overwritten: runs already
+// converted with the same inputs, options and FLIRT build are skipped, runs
+// with any other existing outputs are refused.
 
+#include <QCryptographicHash>
 #include <RVersion.h>
 #include <algorithm>
 #include <cctype>
@@ -73,6 +76,8 @@ void usage(const char *argv0)
               << "\"Tested with\"); for anything else, compare one run against it first.\n"
               << "An input is a listfile archive or a directory, which gives its *.zip files\n"
               << "(not recursive, in natural order).\n"
+              << "Runs already converted with the same inputs, options and FLIRT build are\n"
+              << "skipped; other existing outputs are never overwritten.\n"
               << "\n"
               << "  -o, --output-dir    existing directory for the outputs\n"
               << "  -j N                convert up to N listfiles at once (default: 1, one run at\n"
@@ -89,8 +94,9 @@ void usage(const char *argv0)
               << "  --json-events       stdout: one JSON event per line for programs, instead of\n"
               << "                      the summary lines\n"
               << "\n"
-              << "Exit codes: 0 all converted, 1 a conversion failed or the --summary file could\n"
-              << "not be written, 2 usage, 3 unsupported input, 130 interrupted.\n";
+              << "Exit codes: 0 all converted or skipped, 1 a conversion failed, outputs exist or\n"
+              << "the --summary file could not be written, 2 usage, 3 unsupported input,\n"
+              << "130 interrupted.\n";
 }
 
 struct Options
@@ -102,6 +108,19 @@ struct Options
     uint64_t ditherOffset = 0;
     bool acceptDamagedInput = false;
     bool jsonEvents = false;    // --json-events: stdout carries JSON events only
+};
+
+// Why a run's existing outputs are not what converting it now would produce:
+// the note (the summary's and the events') and the same in the words of the
+// run's block. Empty if they are (the run is skipped).
+struct Mismatch
+{
+    std::string note;       // "experimentName differs (report \"Experiment\", now \"Test\")"
+    std::string header;     // after "not converted: ": "its files exist and the experiment name differs"
+    std::string attention;  // the end's line: "its files exist with another experiment name"
+    std::string why;        // "the report says \"Experiment\", this run asks for \"Test\""
+
+    bool empty() const { return note.empty(); }
 };
 
 struct Run
@@ -123,13 +142,15 @@ struct Run
     std::string eventPhase; // --json-events: the last progress event's phase and percent
     int eventPercent = -1;
     Clock::time_point eventTime;
+    Mismatch why;           // outputs-exist: why, in the block's words
     std::vector<std::string> otherLines;    // ended badly: the child's lines the note does not hold
     std::string killedNote; // converted, then killed: said in its block
     RunBlock block;         // what was said about it (batch_text.h)
     bool said = false;      // its block was printed
 };
 
-const char *const Results[] = { "converted", "failed", "unsupported", "interrupted", "not-started" };
+const char *const Results[] = { "converted", "skipped", "outputs-exist", "failed",
+                                "unsupported", "interrupted", "not-started" };
 
 double seconds_since(Clock::time_point t0)
 {
@@ -269,8 +290,169 @@ std::string report_path(const Options &opt, const Run &run) { return opt.outDir 
 // version from the headers, as gROOT->GetVersion() gives ROOT_RELEASE.
 json build_identity()
 {
-    return { {"version", FLIRT_GIT_DESCRIBE}, {"mvme", MVME_GIT_DESCRIBE}, {"root", ROOT_RELEASE} };
+    return { {"version", FLIRT_GIT_DESCRIBE}, {"mvme", MVME_GIT_DESCRIBE}, {"root", ROOT_RELEASE},
+             {"platform", build_platform()}, {"executableSha256", executable_sha256()} };
 }
+// A development build: every dirty tree of a commit, and every build without
+// git, gives the same describe string.
+bool development_build()
+{
+    const std::string version = FLIRT_GIT_DESCRIBE;
+    const std::string dirty = "-dirty";
+    return version.empty()
+        || (version.size() >= dirty.size() && version.compare(version.size() - dirty.size(), dirty.size(), dirty) == 0);
+}
+
+// A mismatch said the same way in the header and the end's line.
+Mismatch differs(const std::string &note, const std::string &what, const std::string &why)
+{
+    return { note, "its files exist " + what, "its files exist " + what, why };
+}
+
+// A setting that differs: "the <noun> differs", "with another <noun>".
+Mismatch setting_differs(const std::string &note, const std::string &noun, const std::string &report,
+                         const std::string &now)
+{
+    return { note, "its files exist and the " + noun + " differs", "its files exist with another " + noun,
+             "the report says " + report + ", this run asks for " + now };
+}
+
+std::string file_name(const std::string &path)
+{
+    return path.substr(path.rfind('/') + 1);
+}
+
+Mismatch mismatch(const Options &opt, const Run &run)
+{
+    const auto reportPath = report_path(opt, run);
+    json report;
+    {
+        std::ifstream in(reportPath);
+        if (!in)
+        {
+            const auto note = "they have no report " + file_name(reportPath)
+                + " (published last), so they are not a complete conversion: e.g. one stopped while publishing"
+                  " (killed, or the machine went down)";
+            return differs(note, "without their report", note);
+        }
+        try
+        {
+            report = json::parse(in);
+        }
+        catch (const std::exception &)
+        {
+            return differs("report " + reportPath + " cannot be parsed", "and their report cannot be read",
+                           file_name(reportPath) + " cannot be parsed");
+        }
+    }
+
+    auto at = [&](const char *pointer) -> json {
+        try { return report.at(json::json_pointer(pointer)); }
+        catch (const std::exception &) { return json(); }
+    };
+
+    if (at("/status") != "ok")
+        return differs("the report's status is " + at("/status").dump(),
+                       "from a conversion with status " + dump_valid_utf8(at("/status")),
+                       "only a conversion with status \"ok\" is skipped");
+
+    // The same build: FLIRT's describe string, mvme, ROOT and the platform;
+    // for a development build also the same executable (README, "Skipping
+    // and refusing").
+    const auto build = build_identity();
+    for (const char *key: { "version", "mvme", "root", "platform" })
+        if (at(("/flirt/" + std::string(key)).c_str()) != build[key])
+        {
+            const auto note = std::string("made by another build (") + key + " "
+                + dump_valid_utf8(at(("/flirt/" + std::string(key)).c_str())) + ", this is "
+                + dump_valid_utf8(build[key]) + ")";
+            return differs(note, "from another FLIRT build", note);
+        }
+    if (development_build() && (build["executableSha256"] == "" || at("/flirt/executableSha256") != build["executableSha256"]))
+    {
+        const auto note = "made by another flirt-convert executable (this development build, version "
+            + dump_valid_utf8(build["version"]) + ", skips only outputs of the same executable)";
+        return differs(note, "from another flirt-convert executable", note);
+    }
+
+    struct stat st;
+    if (stat(run.input.c_str(), &st) != 0)
+        return differs("cannot stat " + run.input, "and the input cannot be read", "cannot stat " + run.input);
+    const timespec mtime = stat_mtime(st);
+    const int64_t mtimeNs = static_cast<int64_t>(mtime.tv_sec) * 1000000000 + mtime.tv_nsec;
+    if (at("/input/size") != json(static_cast<int64_t>(st.st_size)) || at("/input/mtimeNs") != json(mtimeNs))
+    {
+        const std::string note = "the input's size or modification time differs from the report's";
+        return differs(note, "from another version of the input file", note);
+    }
+
+    if (at("/options/ditherOffset") != json(opt.ditherOffset))
+        return setting_differs("ditherOffset differs (report " + dump_valid_utf8(at("/options/ditherOffset")) + ", now "
+                               + std::to_string(opt.ditherOffset) + ")",
+                               "dither offset", dump_valid_utf8(at("/options/ditherOffset")),
+                               std::to_string(opt.ditherOffset));
+
+    // The files against the report: the note names their paths, the block
+    // their names (the folder is said once).
+    auto files_differ = [](const std::string &path, const std::string &what)
+    {
+        return differs(path + " " + what, "and do not match their report", file_name(path) + " " + what);
+    };
+    const std::pair<std::string, const char *> files[] = {
+        { raw_path(opt, run), "/output/rawBytes" }, { histos_path(opt, run), "/output/histosBytes" } };
+    for (const auto &[path, pointer]: files)
+    {
+        if (stat(path.c_str(), &st) != 0)
+            return files_differ(path, "is missing");
+        if (at(pointer) != json(static_cast<int64_t>(st.st_size)))
+            return files_differ(path, "size differs from the report's");
+    }
+
+    return {};
+}
+
+}
+
+std::string build_platform()
+{
+#ifdef __APPLE__
+    const std::string os = "macos";
+#else
+    const std::string os = "linux";
+#endif
+#if defined(__x86_64__)
+    return os + "-x86_64";
+#elif defined(__aarch64__) || defined(__arm64__)
+    return os + "-arm64";
+#else
+    return os + "-unknown";
+#endif
+}
+
+const std::string &executable_sha256()
+{
+    static const std::string hex = [] {
+        std::ifstream in(self_exe(), std::ios::binary);
+        if (!in)
+            return std::string();
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        std::vector<char> buffer(1u << 20);
+        while (in)
+        {
+            in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            if (in.gcount() > 0)
+                hash.addData(buffer.data(), static_cast<int>(in.gcount()));
+        }
+        if (in.bad())
+            return std::string();
+        return hash.result().toHex().toStdString();
+    }();
+    return hex;
+}
+
+namespace
+{
+
 
 std::string signal_name(int sig)
 {
@@ -495,10 +677,10 @@ void finish(Run &run, int status, bool stopping, const Options &opt, const Say &
     else
     {
         const int sig = WTERMSIG(status);
-        // Before it ran, there were none of its outputs (the child refuses
-        // existing ones). The report is published last, after the other
-        // outputs are on disk (RootWriter::publish): with it the set is
-        // complete, without it any of its outputs there are an incomplete set.
+        // Before it ran, there were none of its outputs (classify). The
+        // report is published last, after the other outputs are on disk
+        // (RootWriter::publish): with it the set is complete, without it
+        // any of its outputs there are an incomplete set.
         std::string report;
         try
         {
@@ -610,6 +792,26 @@ RunBlock block_of(const Run &run, const Options &opt)
             b.rows.push_back({ label, text, label == "note" ? text : std::string() });
     };
     const auto f = failure_of(run);
+    if (run.result == "skipped")
+    {
+        b.mark = "–", b.tone = Tone::Skip, b.outcome = "skipped";
+        b.rest = ": already converted with the same input, options and FLIRT build";
+        return b;
+    }
+    if (run.result == "outputs-exist")
+    {
+        b.mark = "!", b.tone = Tone::Warning, b.outcome = "not converted";
+        b.rest = ": " + run.why.header;
+        row("why", run.why.why);
+        // Only the run's files that are there, by their endings.
+        std::vector<std::string> present;
+        for (const auto &path: { raw_path(opt, run), histos_path(opt, run), report_path(opt, run) })
+            if (exists(path))
+                present.push_back(path.substr(opt.outDir.size() + 1 + run.runId.size()));
+        row("to do", "delete " + listed(present) + " of this run to convert it again");
+        b.attention = run.why.attention;
+        return b;
+    }
     if (run.result == "not-started")
     {
         b.mark = "–";
@@ -866,7 +1068,8 @@ int run_batch(int argc, char *argv[])
     display.lines({ "Converting " + std::to_string(runs.size()) + (runs.size() == 1 ? " run" : " runs") + " into "
                     + shown_path(opt.outDir), "" });
 
-    // True if the run is to be converted.
+    // Skip what is up to date, refuse other existing outputs; true if the run
+    // is to be converted.
     auto classify = [&](Run &run) -> bool
     {
         // A listfile's name becomes its run's file names: only a standard
@@ -883,10 +1086,40 @@ int run_batch(int argc, char *argv[])
             return false;
         }
 
+        const std::string outputs[] = { raw_path(opt, run), histos_path(opt, run), report_path(opt, run) };
         struct stat st;
         run.bytes = stat(run.input.c_str(), &st) == 0 ? static_cast<uint64_t>(st.st_size) : 0;
-        run.convert = true;
-        return true;
+        if (std::none_of(std::begin(outputs), std::end(outputs), exists))
+        {
+            run.convert = true;
+            return true;
+        }
+
+        const auto why = mismatch(opt, run);
+        if (why.empty())
+        {
+            run.result = "skipped";
+            run.note = "already converted";
+            say(run.runId + ": skipped: already converted with the same input, options and FLIRT build");
+        }
+        else
+        {
+            run.result = "outputs-exist";
+            run.note = why.note;
+            run.why = why;
+            // Only the run's files that are there.
+            std::vector<std::string> present;
+            for (const auto &path: outputs)
+                if (exists(path))
+                    present.push_back(path.substr(path.rfind('/') + 1));
+            std::string names;
+            for (size_t i = 0; i < present.size(); ++i)
+                names += (i == 0 ? "" : i + 1 == present.size() ? " and " : ", ") + present[i];
+            say(run.runId + ": outputs-exist: " + why.note + "; remove " + names + " in " + opt.outDir
+                + " to reconvert");
+        }
+        print_block(run);
+        return false;
     };
 
     // The runs to launch, in input order.
@@ -1072,7 +1305,7 @@ int run_batch(int argc, char *argv[])
     int exitCode = 0;
     if (stopping)
         exitCode = 130;
-    else if (totals["failed"])
+    else if (totals["failed"] || totals["outputs-exist"])
         exitCode = 1;
     else if (totals["unsupported"])
         exitCode = 3;
@@ -1090,8 +1323,8 @@ int run_batch(int argc, char *argv[])
         blocks.push_back(&run.block);
     }
     const std::pair<size_t, const char *> counted[] = {
-        { totals["converted"], "converted" },
-        { totals["interrupted"], "not converted" }, { totals["unsupported"], "unsupported" },
+        { totals["converted"], "converted" }, { totals["skipped"], "skipped" },
+        { totals["outputs-exist"] + totals["interrupted"], "not converted" }, { totals["unsupported"], "unsupported" },
         { totals["failed"], "failed" }, { totals["not-started"], "not started" } };
     std::string counts;
     for (const auto &[n, word]: counted)

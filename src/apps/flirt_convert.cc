@@ -578,8 +578,10 @@ int convert_one(int argc, char *argv[])
         const auto &rt = writer.timings();
 
         es::json report;
+        // As the batch's build_identity(), which the skip rule compares.
         report["flirt"] = { {"version", FLIRT_GIT_DESCRIBE}, {"mvme", MVME_GIT_DESCRIBE},
-                            {"root", flirt::root_version()} };
+                            {"root", flirt::root_version()}, {"platform", flirt::build_platform()},
+                            {"executableSha256", flirt::executable_sha256()} };
         report["status"] = failed ? "accepted-with-failed-checks" : "ok";
         report["checks"] = checks.toJson();
         report["input"] = { {"path", real_path(input)}, {"sha256", inputHash},
