@@ -38,6 +38,7 @@
 #include <unistd.h>
 
 #include "batch.h"
+#include "common/compression.h"
 #include "common/failures.h"
 #include "common/names.h"
 #include "common/platform.h"
@@ -75,7 +76,7 @@ void usage(const char *argv0)
               << " [--summary <file.json>] [--analysis <file.analysis> | --default-filters]"
               << " [--experiment-name <name>] [--experiment-title <title>]"
               << " [--dither-offset <N>] [--threads <T>] [--no-waveforms] [--official-waveform-branches]"
-              << " [--extract-hit-flags] [--accept-damaged-input] [--json-events]\n"
+              << " [--extract-hit-flags] [--compression <name>] [--accept-damaged-input] [--json-events]\n"
               << "       " << argv0 << " <listfile.zip> -o <outdir> --dither-offset-from <official _raw.root>"
               << " [the conversion options above]\n"
               << "       " << argv0 << " --watch <dir> -o <outdir> [--settle <S>] [-j N] [--summary <file.json>]"
@@ -127,6 +128,9 @@ void usage(const char *argv0)
               << "                      write <runId>_hit_flags.analysis, with which official mvme\n"
               << "                      makes the identical files; every value's random part then\n"
               << "                      differs from files made without this option\n"
+              << "  --compression NAME  the ROOT files' compression: " << compression_names() << "\n"
+              << "                      (default: " << default_compression().name << ", the only one whose files\n"
+              << "                      are identical to official ones; README, \"Compression\")\n"
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
@@ -160,6 +164,7 @@ struct Options
     bool defaultFilters = false;
     bool officialWaveformBranches = false;
     bool extractHitFlags = false;
+    std::string compression = default_compression().name;  // common/compression.h
     bool acceptDamagedInput = false;
     bool jsonEvents = false;    // --json-events: stdout carries JSON events only
     bool watch = false;     // --watch: watchDir instead of inputs
@@ -354,6 +359,12 @@ Options parse_args(int argc, char *argv[])
         else if (arg == "--default-filters") opt.defaultFilters = true;
         else if (arg == "--official-waveform-branches") opt.officialWaveformBranches = true;
         else if (arg == "--extract-hit-flags") opt.extractHitFlags = true;
+        else if (arg == "--compression")
+        {
+            opt.compression = value();
+            if (!find_compression(opt.compression))
+                throw usage_error("--compression must be " + compression_names());
+        }
         else if (arg == "--json-events") opt.jsonEvents = true;
         else if (!arg.empty() && arg[0] == '-') throw usage_error("unknown option " + arg, true);
         else sources.emplace_back(false, arg);
@@ -600,7 +611,8 @@ Mismatch mismatch(const Options &opt, const Run &run)
         { "noWaveforms", opt.noWaveforms, "--no-waveforms setting" },
         { "defaultFilters", opt.defaultFilters, "--default-filters setting" },
         { "officialWaveformBranches", opt.officialWaveformBranches, "--official-waveform-branches setting" },
-        { "extractHitFlags", opt.extractHitFlags, "--extract-hit-flags setting" } };
+        { "extractHitFlags", opt.extractHitFlags, "--extract-hit-flags setting" },
+        { "compression", opt.compression, "compression" } };
     for (const auto &[name, value, noun]: options)
     {
         const auto recorded = at(("/options/" + std::string(name)).c_str());
@@ -795,6 +807,8 @@ bool launch(Run &run, const Options &opt, const char *argv0)
         args.push_back("--official-waveform-branches");
     if (opt.extractHitFlags)
         args.push_back("--extract-hit-flags");
+    if (opt.compression != default_compression().name)
+        args.insert(args.end(), { "--compression", opt.compression });
     if (!opt.analysisFile.empty())
         args.insert(args.end(), { "--analysis", opt.analysisFile });
     if (opt.acceptDamagedInput)
@@ -1123,6 +1137,7 @@ json options_json(const Options &opt)
              {"defaultFilters", opt.defaultFilters},
              {"officialWaveformBranches", opt.officialWaveformBranches},
              {"extractHitFlags", opt.extractHitFlags},
+             {"compression", opt.compression},
              {"acceptDamagedInput", opt.acceptDamagedInput},
              {"watch", opt.watch ? json(opt.watchDir) : json(nullptr)},
              {"settleSeconds", opt.watch ? json(opt.settleSeconds) : json(nullptr)} };

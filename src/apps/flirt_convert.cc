@@ -38,6 +38,7 @@
 #include <thread>
 #include <unistd.h>
 
+#include "common/compression.h"
 #include "common/names.h"
 #include "common/platform.h"
 #include "common/utf8.h"
@@ -173,7 +174,7 @@ void usage(const char *argv0)
               << " [--experiment-name <name>] [--experiment-title <title>]"
               << " [--dither-offset <N> | --dither-offset-from <official _raw.root>] [--threads <T>] [--no-waveforms]"
               << " [--official-waveform-branches]"
-              << " [--extract-hit-flags] [--accept-damaged-input] [--progress-fd <N>]\n"
+              << " [--extract-hit-flags] [--compression <name>] [--accept-damaged-input] [--progress-fd <N>]\n"
               << "\n"
               << "  --analysis          use this mvme analysis instead of the one in the archive\n"
               << "  --default-filters   use the analysis mvme's \"Generate default filters\" builds\n"
@@ -199,6 +200,9 @@ void usage(const char *argv0)
               << "                      write <runId>_hit_flags.analysis, with which official mvme\n"
               << "                      makes the identical files; every value's random part then\n"
               << "                      differs from files made without this option\n"
+              << "  --compression       the ROOT files' compression: " << flirt::compression_names() << "\n"
+              << "                      (default: " << flirt::default_compression().name << ", the only one\n"
+              << "                      whose files are identical to official ones)\n"
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
@@ -639,6 +643,7 @@ int convert_one(int argc, char *argv[])
     bool defaultFilters = false;
     bool officialWaveformBranches = false;
     bool extractHitFlags = false;
+    const flirt::Compression *compression = &flirt::default_compression();
     bool published = false;
     unsigned threads = 1;
     int progressFd = -1;
@@ -685,6 +690,15 @@ int convert_one(int argc, char *argv[])
         else if (arg == "--default-filters") defaultFilters = true;
         else if (arg == "--official-waveform-branches") officialWaveformBranches = true;
         else if (arg == "--extract-hit-flags") extractHitFlags = true;
+        else if (arg == "--compression")
+        {
+            compression = flirt::find_compression(value());
+            if (!compression)
+            {
+                usage(argv[0]);
+                return 2;
+            }
+        }
         else if (arg == "-h" || arg == "--help") { usage(argv[0]); return 0; }
         else if (!arg.empty() && arg[0] == '-') { usage(argv[0]); return 2; }
         else if (input.empty()) input = arg;
@@ -913,6 +927,7 @@ int convert_one(int argc, char *argv[])
         rootOpts.runId = listfile.runId;
         rootOpts.mvmePrefix = own_prefix();
         rootOpts.implicitMTThreads = threads;
+        rootOpts.compression = compression->setting;
         // The waveform writer writes its own file in its own thread.
         rootOpts.threadSafety = writeWaveforms;
 
@@ -934,7 +949,7 @@ int convert_one(int argc, char *argv[])
         std::unique_ptr<flirt::WaveformWriter> waveforms;
         if (writeWaveforms)
             waveforms = std::make_unique<flirt::WaveformWriter>(
-                writer.addFile(listfile.runId, waveformsName), waveformTrees);
+                writer.addFile(listfile.runId, waveformsName), waveformTrees, compression->setting);
 
         // The edited analysis, staged and published with the other outputs.
         if (extractHitFlags)
@@ -1097,7 +1112,9 @@ int convert_one(int argc, char *argv[])
                               {"threads", threads}, {"noWaveforms", noWaveforms},
                               {"defaultFilters", defaultFilters},
                               {"officialWaveformBranches", officialWaveformBranches},
-                              {"extractHitFlags", extractHitFlags} };
+                              {"extractHitFlags", extractHitFlags},
+                              {"compression", compression->name},
+                              {"compressionSetting", compression->setting} };
         report["output"] = { {"raw", output.rawFile}, {"histos", output.histosFile},
                              {"rawBytes", static_cast<int64_t>(output.rawBytes)},
                              {"histosBytes", static_cast<int64_t>(output.histosBytes)},

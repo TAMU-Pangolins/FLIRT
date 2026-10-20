@@ -24,6 +24,10 @@ struct RootOutputOptions
     // > 1: ROOT::EnableImplicitMT(implicitMTThreads), so ROOT compresses
     // baskets in parallel. The output is identical for any value.
     unsigned implicitMTThreads = 1;
+    // The raw and histogram files' compression, as TFile takes it
+    // (common/compression.h). 101, the TFile default mvme_root_client gets,
+    // keeps the files identical to official ones.
+    int compression = 101;
     // ROOT::EnableThreadSafety() before any other ROOT use, for another thread
     // writing its own ROOT file (the waveform writer).
     bool threadSafety = false;

@@ -404,9 +404,11 @@ void RootWriter::Private::beginRun(const es::Message &, const es::StreamInfo &st
         ScopedChdir cd(tmpDir);
 
         // :841-885. The client gives TFile no compression, so it gets ROOT's
-        // compiled default.
+        // compiled default; --compression mvme passes that same value.
+        static_assert(ROOT::RCompressionSetting::EDefaults::kUseCompiledDefault == 101,
+                      "--compression mvme must be the TFile default (common/compression.cc)");
         const auto rawStaging = root_safe_name(rawName);
-        treeOutFile = new TFile(rawStaging.c_str(), "recreate");
+        treeOutFile = new TFile(rawStaging.c_str(), "recreate", "", opts.compression);
         tmpFiles.push_back(rawStaging);
 
         if (treeOutFile->IsZombie() || !treeOutFile->IsOpen())
@@ -433,7 +435,7 @@ void RootWriter::Private::beginRun(const es::Message &, const es::StreamInfo &st
 
         // :890-915
         const auto histosStaging = root_safe_name(histosName);
-        histoOutFile = std::make_unique<TFile>(histosStaging.c_str(), "recreate");
+        histoOutFile = std::make_unique<TFile>(histosStaging.c_str(), "recreate", "", opts.compression);
         tmpFiles.push_back(histosStaging);
 
         if (histoOutFile->IsZombie() || !histoOutFile->IsOpen())
