@@ -192,6 +192,9 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
         files += "   _waveforms.root";
     row("files", files + "   .flirt.json");
 
+    if (const auto lost = loss_block_text(facts); !lost.empty())
+        row("lost", lost);
+
     // The notes, then the warnings, in the order flirt-convert's child prints them.
     if (const auto line = settings_changes_line(facts.settings); starts_with(line, "note: "))
         note(line.substr(6));

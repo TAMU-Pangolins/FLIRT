@@ -1,7 +1,11 @@
 #include "flirt/run_info.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <ctime>
+
+#include "common/failures.h"
 
 namespace mvlc = mesytec::mvlc;
 namespace parser = mesytec::mvlc::readout_parser;
@@ -27,6 +31,11 @@ json time_or_null(const std::optional<int64_t> &t)
 json text_or_null(const std::string &text)
 {
     return text.empty() ? json(nullptr) : json(text);
+}
+
+std::string plural(uint64_t n, const char *word)
+{
+    return std::to_string(n) + " " + word + (n == 1 ? "" : "s");
 }
 
 json settings_changes_json(const SettingsChanges &sc)
@@ -58,6 +67,29 @@ json flag_json(const RateFlag &flag)
                      {"after", flag.after} };
     }
     return nullptr;
+}
+
+std::string hh_mm(int64_t t)
+{
+    return format_local_time(t, "%H:%M");
+}
+
+// The top 3 of the minutes with loss by lost packets (the earlier on ties),
+// in time order.
+std::vector<size_t> top_loss_minutes(const std::vector<MinuteBin> &bins, std::vector<size_t> top)
+{
+    std::stable_sort(top.begin(), top.end(),
+                     [&](size_t a, size_t b) { return bins[a].lostPackets > bins[b].lostPackets; });
+    if (top.size() > 3)
+        top.resize(3);
+    std::sort(top.begin(), top.end());
+    return top;
+}
+
+// "1,073,420": thousands separated (common/failures.h).
+std::string number(uint64_t n)
+{
+    return separate_thousands(std::to_string(n));
 }
 
 // "2026-03-03T14:31:00-06:00" (iso8601_local) -> Unix seconds; nullopt if
@@ -109,9 +141,109 @@ RunFacts run_facts(const ListfileInfo &listfile, const parser::ReadoutParserCoun
     facts.rate = recorder.timeline.analyze(facts.times);
     facts.counters = counters;
     facts.events = readout_events(counters);
+    facts.lossBursts = recorder.lossBursts;
     facts.connection = listfile.format;
     facts.settings = settings_changes(listfile);
     return facts;
+}
+
+uint64_t events_lost_estimate(uint64_t lost, uint64_t received, uint64_t events, uint64_t bursts)
+{
+    const double perPacket = received ? double(events) / double(received) : 0.0;
+    return static_cast<uint64_t>(std::llround(double(lost) * perPacket + double(bursts)));
+}
+
+std::string share_text(uint64_t part, uint64_t whole)
+{
+    const double percent = whole ? 100.0 * double(part) / double(whole) : 0.0;
+    if (percent < 0.0001)
+        return part ? "< 0.0001 %" : "0 %";
+
+    // Two significant digits, then as many decimals as they need.
+    int e = static_cast<int>(std::floor(std::log10(percent)));
+    const double unit = std::pow(10.0, e - 1);
+    const double rounded = std::round(percent / unit) * unit;
+    if (rounded >= std::pow(10.0, e + 1))
+        ++e;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*f %%", std::max(0, 1 - e), rounded);
+    return buf;
+}
+
+size_t minutes_with_loss(const RateAnalysis &rate)
+{
+    return static_cast<size_t>(std::count_if(rate.minutes.begin(), rate.minutes.end(),
+                                             [](const MinuteBin &b) { return b.lostPackets > 0; }));
+}
+
+std::string loss_text(const RunFacts &facts)
+{
+    const uint64_t lost = facts.counters.ethPacketLoss, received = facts.counters.ethPacketsProcessed;
+    if (!lost)
+        return {};
+
+    std::string text = std::to_string(lost) + " of " + std::to_string(received + lost) + " ("
+        + share_text(lost, received + lost) + "), about "
+        + plural(events_lost_estimate(lost, received, facts.events, facts.lossBursts), "event") + ", in "
+        + plural(facts.lossBursts, "burst");
+
+    const auto &bins = facts.rate.minutes;
+    if (bins.empty())
+        return text;
+
+    const size_t live = static_cast<size_t>(std::count_if(bins.begin(), bins.end(),
+                                                          [](const MinuteBin &b) { return b.liveSeconds > 0; }));
+    std::vector<size_t> withLoss;
+    for (size_t i = 0; i < bins.size(); ++i)
+        if (bins[i].lostPackets)
+            withLoss.push_back(i);
+
+    const auto top = top_loss_minutes(bins, withLoss);
+
+    text += "; in " + std::to_string(withLoss.size()) + " of " + std::to_string(live) + " minutes, "
+        + (withLoss.size() > 3 ? "most in " : "in ");
+    for (size_t j = 0; j < top.size(); ++j)
+        text += (j ? ", " : "") + hh_mm(bins[top[j]].start) + " (" + std::to_string(bins[top[j]].lostPackets) + ")";
+    return text;
+}
+
+std::string loss_block_text(const RunFacts &facts)
+{
+    const uint64_t lost = facts.counters.ethPacketLoss, received = facts.counters.ethPacketsProcessed;
+    if (!lost)
+        return {};
+
+    std::string text = number(lost) + " of " + number(received + lost) + " packets ("
+        + share_text(lost, received + lost) + ") in " + number(facts.lossBursts)
+        + (facts.lossBursts == 1 ? " burst" : " bursts") + ", about "
+        + number(events_lost_estimate(lost, received, facts.events, facts.lossBursts))
+        + (events_lost_estimate(lost, received, facts.events, facts.lossBursts) == 1 ? " event" : " events");
+
+    const auto &bins = facts.rate.minutes;
+    if (bins.empty())
+        return text;
+
+    const size_t live = static_cast<size_t>(std::count_if(bins.begin(), bins.end(),
+                                                          [](const MinuteBin &b) { return b.liveSeconds > 0; }));
+    std::vector<size_t> withLoss;
+    for (size_t i = 0; i < bins.size(); ++i)
+        if (bins[i].lostPackets)
+            withLoss.push_back(i);
+    const auto top = top_loss_minutes(bins, withLoss);
+    if (top.empty())
+        return text;
+
+    // "14:31, 14:52 and 15:03 (3 each)", or each with its count.
+    const bool same = std::all_of(top.begin(), top.end(),
+                                  [&](size_t i) { return bins[i].lostPackets == bins[top[0]].lostPackets; });
+    text += "; in " + std::to_string(withLoss.size()) + " of " + std::to_string(live) + " minutes, "
+        + (withLoss.size() > 3 ? "most at " : "at ");
+    for (size_t j = 0; j < top.size(); ++j)
+        text += (j == 0 ? "" : j + 1 == top.size() ? " and " : ", ") + hh_mm(bins[top[j]].start)
+            + (same ? "" : " (" + number(bins[top[j]].lostPackets) + ")");
+    if (same)
+        text += " (" + number(bins[top[0]].lostPackets) + (top.size() > 1 ? " each)" : ")");
+    return text;
 }
 
 RunFacts run_facts_from_json(const json &run)
@@ -129,6 +261,15 @@ RunFacts run_facts_from_json(const json &run)
 
     for (const auto &event: run.value("events", json::array()))
         facts.events += event.value("readoutEvents", uint64_t(0));
+
+    const auto packets = run.value("packets", json());
+    facts.connection = packets.is_object() ? mvlc::ConnectionType::ETH : mvlc::ConnectionType::USB;
+    if (packets.is_object())
+    {
+        facts.counters.ethPacketsProcessed = packets.value("received", uint64_t(0));
+        facts.counters.ethPacketLoss = packets.value("lost", uint64_t(0));
+        facts.lossBursts = packets.value("bursts", uint64_t(0));
+    }
 
     for (const auto &bin: run.value("minutes", json::array()))
     {
@@ -201,6 +342,18 @@ json run_json(const RunFacts &facts, const VMEConfig &vmeConfig)
         }
     }
 
+    json packets = nullptr;
+    if (facts.connection == mvlc::ConnectionType::ETH)
+    {
+        const uint64_t lost = pc.ethPacketLoss, received = pc.ethPacketsProcessed;
+        packets = { {"received", received}, {"lost", lost},
+                    {"lostShare", received + lost ? double(lost) / double(received + lost) : 0.0},
+                    {"bursts", facts.lossBursts},
+                    {"eventsLostEstimate", events_lost_estimate(lost, received, facts.events, facts.lossBursts)},
+                    {"minutesWithLoss", facts.rate.minutes.empty() ? json(nullptr)
+                                                                   : json(minutes_with_loss(facts.rate))} };
+    }
+
     json flags = json::array();
     for (const auto &flag: facts.rate.flags)
         flags.push_back(flag_json(flag));
@@ -217,6 +370,7 @@ json run_json(const RunFacts &facts, const VMEConfig &vmeConfig)
              {"pausedSeconds", or_null(times.paused)}, {"liveSeconds", or_null(times.live)},
              {"events", events}, {"modules", modules},
              {"settingsChanges", settings_changes_json(facts.settings)},
+             {"packets", packets},
              {"rate", { {"medianPerSecond", or_null(facts.rate.median)}, {"flags", flags} }},
              {"minutes", minutes} };
 }
