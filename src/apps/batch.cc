@@ -29,6 +29,7 @@
 #include "batch.h"
 #include "common/names.h"
 #include "common/platform.h"
+#include "common/utf8.h"
 #include "flirt/listfile.h"
 
 extern char **environ;
@@ -142,8 +143,16 @@ void add_input(const std::string &path, std::vector<std::string> &inputs)
     }
 }
 
+// A name FLIRT handles that is not standard (common/names.h): a usage error.
+void check_name(const std::string &option, const std::string &path)
+{
+    if (const auto refusal = name_refusal(own_name(path)); !refusal.empty())
+        throw usage_error(option + " " + refusal);
+}
+
 void add_list(const std::string &listFile, std::vector<std::string> &inputs)
 {
+    check_name("--list", listFile);
     std::ifstream in(listFile);
     if (!in)
         throw usage_error("cannot read list file " + listFile);
@@ -211,6 +220,10 @@ Options parse_args(int argc, char *argv[])
     if (!realpath(opt.outDir.c_str(), buf))
         throw usage_error("cannot resolve " + opt.outDir);
     opt.outDir = buf;
+    // The folder the outputs go in, by its real name ("-o ." is the working
+    // folder's); the folders above it may hold any name.
+    if (const auto refusal = name_refusal(own_name(opt.outDir)); !refusal.empty() && opt.outDir != "/")
+        throw usage_error("output directory " + refusal);
 
     return opt;
 }
@@ -282,7 +295,7 @@ bool launch(Run &run, const Options &opt, const char *argv0)
     }
     if (!run.log)
     {
-        run.note = "cannot create a temporary file in " + opt.outDir + ": "
+        run.note = "cannot create a temporary file in " + printable_text(opt.outDir) + ": "
                    + std::strerror(errno);
         return false;
     }
@@ -538,10 +551,30 @@ int run_batch(int argc, char *argv[])
     const Say say = [](const std::string &text) { std::cerr << text << "\n"; };
     const Say &tell = say;
 
+    // True if the run is to be converted.
+    auto classify = [&](Run &run) -> bool
+    {
+        // A listfile's name becomes its run's file names: only a standard
+        // one is converted (common/names.h), each other run goes on.
+        if (const auto refusal = name_refusal(own_name(run.input)); !refusal.empty())
+        {
+            // Nothing is written under it; its lines show it safely.
+            run.runId = printable_text(run.runId);
+            run.result = "unsupported";
+            run.note = "refused: " + refusal;
+            say(run.runId + ": " + run.note);
+            say_result(run, say);
+            return false;
+        }
+
+        return true;
+    };
+
     // The runs to launch, in input order.
     std::deque<Run *> queue;
     for (auto &run: runs)
-        queue.push_back(&run);
+        if (classify(run))
+            queue.push_back(&run);
 
     // At most opt.jobs children at a time.
     bool stopping = false;

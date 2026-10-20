@@ -9,6 +9,26 @@
 namespace flirt
 {
 
+// Standard names (docs/design.md, "Standard names"): the names FLIRT handles
+// (a listfile's, the output folder's, the files given to options) use only
+// ASCII letters, digits, '_', '-', '.' and spaces; not empty, not only dots,
+// not starting with '-' (it reads as an option), not starting or ending with
+// a space. Folders above them may hold any name: only a path's own name is
+// checked.
+//
+// Empty for a standard name, else why not, naming the first character that
+// is not allowed: "\"#\" is not allowed".
+std::string nonstandard_name_reason(const std::string &name);
+
+// Empty for a standard name, else the one message every program prints:
+// "<name, printable>: name not accepted: <reason> (use letters, digits, _ - .
+// and spaces)".
+std::string name_refusal(const std::string &name);
+
+// A path's own name: its last component, trailing slashes ignored
+// ("a/b/" -> "b"); empty for "/" or "".
+std::string own_name(const std::string &path);
+
 // A directory's listfile names, as the shell's glob gives them: *.zip, not
 // starting with '.'.
 bool is_listfile_name(const std::string &name);

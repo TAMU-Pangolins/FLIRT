@@ -10,6 +10,11 @@ namespace flirt
 // nlohmann 3.3.0 throws on invalid UTF-8 when it writes JSON.
 std::string valid_utf8(const std::string &text);
 
+// The text as it may be shown on a terminal: valid_utf8, then every C0 or C1
+// control character (newline and tab too) and DEL replaced by '?', so no
+// escape sequence is printed.
+std::string printable_text(const std::string &text);
+
 // The JSON value with every string and every object key passed through
 // valid_utf8 (docs/design.md, "Text that is not valid UTF-8"). A template on
 // the json type, so that common/ needs no nlohmann of its own.

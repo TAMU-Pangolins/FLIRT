@@ -1,5 +1,7 @@
 #include "names.h"
 
+#include "utf8.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -12,6 +14,62 @@
 
 namespace flirt
 {
+
+namespace
+{
+
+bool standard_char(unsigned char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'
+        || c == '.' || c == ' ';
+}
+
+}
+
+std::string nonstandard_name_reason(const std::string &name)
+{
+    for (size_t i = 0; i < name.size(); ++i)
+    {
+        const auto c = static_cast<unsigned char>(name[i]);
+        if (standard_char(c))
+            continue;
+        if (c > 0x20 && c < 0x7F)
+            return c == '"' ? "'\"' is not allowed" : "\"" + std::string(1, static_cast<char>(c)) + "\" is not allowed";
+        // A whole character if it is valid UTF-8 and shown as it is; else
+        // (a control character, a byte that is not UTF-8) it cannot be named.
+        const size_t len = c < 0xC0 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+        const auto character = name.substr(i, len);
+        if (c >= 0x80 && character.size() == len && printable_text(character) == character)
+            return "\"" + character + "\" is not allowed";
+        return "an unprintable character is not allowed";
+    }
+    if (name.empty())
+        return "an empty name is not allowed";
+    if (name.find_first_not_of('.') == std::string::npos)
+        return "a name of only dots is not allowed";
+    if (name[0] == '-')
+        return "a name must not start with \"-\"";
+    if (name.front() == ' ' || name.back() == ' ')
+        return "a name must not start or end with a space";
+    return {};
+}
+
+std::string name_refusal(const std::string &name)
+{
+    const auto reason = nonstandard_name_reason(name);
+    if (reason.empty())
+        return {};
+    return printable_text(name) + ": name not accepted: " + reason + " (use letters, digits, _ - . and spaces)";
+}
+
+std::string own_name(const std::string &path)
+{
+    const auto end = path.find_last_not_of('/');
+    if (end == std::string::npos)
+        return {};
+    const auto slash = path.rfind('/', end);
+    return path.substr(slash == std::string::npos ? 0 : slash + 1, end - (slash == std::string::npos ? 0 : slash + 1) + 1);
+}
 
 bool natural_less(const std::string &a, const std::string &b)
 {
