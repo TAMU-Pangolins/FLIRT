@@ -28,6 +28,12 @@ inline timespec stat_mtime(const struct stat &st)
 // Empty if it cannot be found.
 std::string self_exe();
 
+// pipe2(fds, O_CLOEXEC). macOS has no pipe2: pipe(), then FD_CLOEXEC on both,
+// which is not atomic: a posix_spawn in another thread in between passes the
+// pipe on. Programs that spawn from several threads therefore add
+// POSIX_SPAWN_CLOEXEC_DEFAULT on macOS.
+int pipe_cloexec(int fds[2]);
+
 // sigtimedwait(set, nullptr, timeout) for signals the caller has blocked in
 // every thread: the signal number, or -1 on timeout or interruption.
 // macOS has no sigtimedwait: a kqueue EVFILT_SIGNAL filter reports each

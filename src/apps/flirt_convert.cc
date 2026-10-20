@@ -1161,6 +1161,8 @@ int convert_one(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+    if (argc > 1 && std::string(argv[1]) == "--official-raw-facts")
+        return flirt::run_official_raw_facts(argc, argv);
     // A mode like --watch: wherever it stands among the arguments.
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--find-dither-offset")

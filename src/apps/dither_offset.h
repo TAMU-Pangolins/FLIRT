@@ -27,7 +27,16 @@ struct OfficialRaw
 {
     std::string path;               // as given
     std::string problem;            // why no offset can be found; empty if found (or still to search)
+    int64_t size = 0, mtimeNs = 0;
     bool runInfo = false;           // has mvme's MVMERunInfo
+    std::string runId;              // its RunID
+    struct Tree
+    {
+        std::string name;
+        int64_t entries = 0;
+        std::vector<std::string> branches;  // top-level (the modules)
+    };
+    std::vector<Tree> trees;
     bool heldTwice = false;         // the run twice in one file: the first copy's offset
     bool noHits = false;            // every offset gives the same file
     std::vector<std::pair<uint32_t, uint32_t>> anchors;    // (fill position, y) of the first usable hits
@@ -48,10 +57,28 @@ void search_dither_offsets(std::vector<OfficialRaw *> files, uint64_t draws,
                            const std::function<void(uint64_t)> &progress,
                            const std::function<bool()> &keepGoing);
 
+nlohmann::json official_raw_json(const OfficialRaw &raw);
+OfficialRaw official_raw_from_json(const nlohmann::json &json);
+
 // The mode `flirt-convert --find-dither-offset <official _raw.root>...`:
 // one line per file on stdout, converts nothing. Exit 0 if every offset was
 // found, 1 if not, 2 for a usage error.
 int run_find_dither_offset(int argc, char *argv[]);
+
+// mvme's name for a run recorded live: its start time, yyMMdd_HHmmss
+// (mvme_context.cc:1718); a replay's is the listfile's name (:1814).
+bool live_run_id(const std::string &runId);
+
+// The hidden helper `flirt-convert --official-raw-facts <file> [<runId>]` a conversion
+// with --dither-offset-from runs in a process of its own (reading the file
+// must not leave ROOT classes behind in the converting process): the facts
+// and the offset as one JSON line on stdout; with <runId>, a file of another
+// run (not a live recording's) is not searched. Stops if its parent goes away.
+int run_official_raw_facts(int argc, char *argv[]);
+
+// Runs that helper on `path` for the run `runId` and returns what it found;
+// throws std::runtime_error if it cannot run or gives no answer.
+OfficialRaw official_raw_facts(const std::string &path, const std::string &runId);
 
 }
 

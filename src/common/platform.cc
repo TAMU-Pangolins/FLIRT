@@ -3,6 +3,7 @@
 #include <climits>
 #include <cstdint>
 #include <cstdlib>
+#include <fcntl.h>
 #include <unistd.h>
 
 #ifdef __APPLE__
@@ -24,6 +25,21 @@ std::string self_exe()
     return resolved;
 #else
     return "/proc/self/exe";
+#endif
+}
+
+int pipe_cloexec(int fds[2])
+{
+#ifdef __APPLE__
+    // Not atomic: see platform.h (spawners from several threads add
+    // POSIX_SPAWN_CLOEXEC_DEFAULT).
+    if (pipe(fds) != 0)
+        return -1;
+    for (int i = 0; i < 2; ++i)
+        fcntl(fds[i], F_SETFD, FD_CLOEXEC);
+    return 0;
+#else
+    return pipe2(fds, O_CLOEXEC);
 #endif
 }
 

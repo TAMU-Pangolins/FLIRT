@@ -10,6 +10,7 @@
 #include <TTree.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
@@ -19,12 +20,17 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <spawn.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <unordered_map>
 
 #include "common/names.h"
+#include "common/platform.h"
 #include "common/utf8.h"
+
+extern char **environ;
 
 namespace flirt
 {
@@ -288,6 +294,9 @@ OfficialRaw read_official_raw(const std::string &path)
         return raw;
     }
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
+    raw.size = static_cast<int64_t>(fst.st_size);
+    const auto mtime = stat_mtime(fst);
+    raw.mtimeNs = static_cast<int64_t>(mtime.tv_sec) * 1000000000 + mtime.tv_nsec;
 
     // ROOT cuts a local name at '#' or '?' and expands '$' and '~': it opens
     // the descriptor's name instead, whatever the file is called.
@@ -303,9 +312,19 @@ OfficialRaw read_official_raw(const std::string &path)
             if (auto info = file->Get<std::map<std::string, std::string>>("MVMERunInfo"))
             {
                 raw.runInfo = true;
+                if (auto it = info->find("RunID"); it != info->end())
+                    raw.runId = it->second;
                 delete info;
             }
             const auto trees = event_trees(file.get());
+            for (auto t: trees)
+            {
+                OfficialRaw::Tree tree{t->GetName(), t->GetEntries(), {}};
+                TIter next(t->GetListOfBranches());
+                while (auto b = next())
+                    tree.branches.push_back(b->GetName());
+                raw.trees.push_back(tree);
+            }
             if (trees.empty())
                 raw.problem = "it holds no event tree: a _histos.root? The offset is found in the run's _raw.root";
             else if (!raw.runInfo)
@@ -411,6 +430,40 @@ void search_dither_offsets(std::vector<OfficialRaw *> all, uint64_t draws,
                 : "not found in the first " + with_separators(i) + " draws of TRandom3(4357): the file was not "
                   "made by mvme_root_client or FLIRT, or its mvme_root_client had dithered more values than that "
                   "before this run";
+}
+
+json official_raw_json(const OfficialRaw &raw)
+{
+    json trees = json::array();
+    for (const auto &t: raw.trees)
+        trees.push_back({ {"name", t.name}, {"entries", t.entries}, {"branches", t.branches} });
+    json anchors = json::array();
+    for (const auto &[position, y]: raw.anchors)
+        anchors.push_back({ position, y });
+    return { {"path", raw.path}, {"problem", raw.problem}, {"size", raw.size}, {"mtimeNs", raw.mtimeNs},
+             {"runInfo", raw.runInfo}, {"runId", raw.runId}, {"trees", trees}, {"heldTwice", raw.heldTwice},
+             {"noHits", raw.noHits}, {"anchors", anchors}, {"found", raw.found}, {"offset", raw.offset} };
+}
+
+OfficialRaw official_raw_from_json(const json &j)
+{
+    OfficialRaw raw;
+    raw.path = j.at("path").get<std::string>();
+    raw.problem = j.at("problem").get<std::string>();
+    raw.size = j.at("size").get<int64_t>();
+    raw.mtimeNs = j.at("mtimeNs").get<int64_t>();
+    raw.runInfo = j.at("runInfo").get<bool>();
+    raw.runId = j.at("runId").get<std::string>();
+    for (const auto &t: j.at("trees"))
+        raw.trees.push_back({ t.at("name").get<std::string>(), t.at("entries").get<int64_t>(),
+                              t.at("branches").get<std::vector<std::string>>() });
+    raw.heldTwice = j.at("heldTwice").get<bool>();
+    raw.noHits = j.at("noHits").get<bool>();
+    for (const auto &a: j.at("anchors"))
+        raw.anchors.emplace_back(a.at(0).get<uint32_t>(), a.at(1).get<uint32_t>());
+    raw.found = j.at("found").get<bool>();
+    raw.offset = j.at("offset").get<uint64_t>();
+    return raw;
 }
 
 namespace
@@ -562,6 +615,103 @@ int run_find_dither_offset(int argc, char *argv[])
         event({ {"event", "end"}, {"exitCode", status} });
     std::cout << std::flush;
     return status;
+}
+
+bool live_run_id(const std::string &runId)
+{
+    if (runId.size() != 13 || runId[6] != '_')
+        return false;
+    for (size_t i = 0; i < runId.size(); ++i)
+        if (i != 6 && !std::isdigit(static_cast<unsigned char>(runId[i])))
+            return false;
+    return true;
+}
+
+int run_official_raw_facts(int argc, char *argv[])
+{
+    if (argc != 3 && argc != 4)
+        return 2;
+    // The answer goes to a copy of stdout; fd 1 then points at stderr, so
+    // stray library output cannot corrupt it.
+    const int answerFd = fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 3);
+    if (answerFd < 0 || dup2(STDERR_FILENO, STDOUT_FILENO) < 0)
+        return 1;
+    const pid_t parent = getppid();
+    auto raw = read_official_raw(argv[2]);
+    // Another run's file is refused without a search.
+    const bool otherRun = argc == 4 && raw.runId != argv[3] && !live_run_id(raw.runId);
+    std::vector<OfficialRaw *> files{ &raw };
+    if (!otherRun)
+        search_dither_offsets(files, DitherSearchDraws, {}, [parent] { return getppid() == parent; });
+    const auto text = dump_valid_utf8(official_raw_json(raw)) + "\n";
+    return write(answerFd, text.data(), text.size()) == static_cast<ssize_t>(text.size()) ? 0 : 1;
+}
+
+OfficialRaw official_raw_facts(const std::string &path, const std::string &runId)
+{
+    int fds[2];
+    if (pipe_cloexec(fds) != 0)
+        throw std::runtime_error(std::string("cannot create a pipe: ") + std::strerror(errno));
+    std::vector<std::string> args = { self_exe(), "--official-raw-facts", path, runId };
+    std::vector<char *> argv;
+    for (auto &a: args)
+        argv.push_back(a.data());
+    argv.push_back(nullptr);
+
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_adddup2(&actions, fds[1], 1);
+    posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    sigset_t none, defaults;
+    sigemptyset(&none);
+    sigemptyset(&defaults);
+    for (int sig: { SIGINT, SIGTERM, SIGHUP, SIGPIPE, SIGCHLD })
+        sigaddset(&defaults, sig);
+    posix_spawnattr_setsigmask(&attr, &none);
+    posix_spawnattr_setsigdefault(&attr, &defaults);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+    pid_t pid = 0;
+    const int err = posix_spawn(&pid, args[0].c_str(), &actions, &attr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attr);
+    ::close(fds[1]);
+    if (err)
+    {
+        ::close(fds[0]);
+        throw std::runtime_error(std::string("cannot start the search: ") + std::strerror(err));
+    }
+
+    std::string text;
+    char buf[65536];
+    for (;;)
+    {
+        const ssize_t n = read(fds[0], buf, sizeof buf);
+        if (n > 0)
+            text.append(buf, static_cast<size_t>(n));
+        else if (n == 0 || errno != EINTR)
+            break;
+    }
+    ::close(fds[0]);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+    { }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        throw std::runtime_error("cannot read " + printable(path) + ": its reader "
+                                 + (WIFSIGNALED(status) ? "was killed by signal " + std::to_string(WTERMSIG(status))
+                                                        : "ended with exit code " + std::to_string(WEXITSTATUS(status))));
+    try
+    {
+        auto raw = official_raw_from_json(json::parse(text));
+        raw.path = path;
+        return raw;
+    }
+    catch (const std::exception &e)
+    {
+        throw std::runtime_error("cannot read " + printable(path) + ": its reader gave no answer (" + e.what() + ")");
+    }
 }
 
 }
