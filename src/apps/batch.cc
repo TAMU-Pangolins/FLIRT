@@ -1307,6 +1307,9 @@ int run_batch(int argc, char *argv[])
     std::vector<Run *> running;
     bool started = false;
     Clock::time_point firstStart;
+    // The watch's estimate uses the time conversions ran, not the wall time.
+    double busySeconds = 0;
+    Clock::time_point busySince;
     uint64_t launches = 0;
     std::string pausedFor;  // the run the watch waits for free space for
     const auto scanPeriod = std::chrono::seconds(2);
@@ -1330,6 +1333,7 @@ int run_batch(int argc, char *argv[])
     {
         using Phase = ProgressDisplay::Run::Phase;
         std::vector<ProgressDisplay::Run> list;
+        size_t finished = 0;
         for (auto &run: runs)
         {
             if (!run.convert)
@@ -1350,11 +1354,23 @@ int run_batch(int argc, char *argv[])
             else
             {
                 r.phase = run.result == "converted" ? Phase::Converted : Phase::Ended;
+                ++finished;
             }
             list.push_back(r);
         }
 
-        const double elapsed = started ? seconds_since(firstStart) : 0;
+        if (opt.watch && running.empty())
+        {
+            const auto written = watcher->being_written(Clock::now());
+            display.idle("[" + std::to_string(finished) + "/" + std::to_string(list.size()) + " done] watching "
+                         + opt.watchDir + ": "
+                         + (pausedFor.empty() ? "waiting for a finished run"
+                                              : "paused, " + pausedFor + " waits for free space")
+                         + (written.empty() ? "" : ", " + written));
+            return;
+        }
+        const double elapsed = opt.watch ? busySeconds + (running.empty() ? 0 : seconds_since(busySince))
+                                         : started ? seconds_since(firstStart) : 0;
         display.update(list, elapsed);
     };
 
@@ -1430,6 +1446,8 @@ int run_batch(int argc, char *argv[])
                     handled(run);
                 }
                 it = running.erase(it);
+                if (running.empty())
+                    busySeconds += seconds_since(busySince);
             }
             else
                 ++it;
@@ -1526,6 +1544,8 @@ int run_batch(int argc, char *argv[])
             run.key = ++launches;
             if (launch(run, opt, argv[0]))
             {
+                if (running.empty())
+                    busySince = Clock::now();
                 running.push_back(&run);
                 progress_event(run, true);
             }
