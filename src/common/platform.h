@@ -4,6 +4,7 @@
 // The few system calls that differ between Linux and macOS, one helper each.
 // On Linux each helper is exactly the call it replaces.
 
+#include <csignal>
 #include <ctime>
 #include <string>
 #include <sys/stat.h>
@@ -26,6 +27,27 @@ inline timespec stat_mtime(const struct stat &st)
 // kernel's link to it. macOS: _NSGetExecutablePath, resolved with realpath().
 // Empty if it cannot be found.
 std::string self_exe();
+
+// sigtimedwait(set, nullptr, timeout) for signals the caller has blocked in
+// every thread: the signal number, or -1 on timeout or interruption.
+// macOS has no sigtimedwait: a kqueue EVFILT_SIGNAL filter reports each
+// signal of the set, even one discarded as ignored (SIGCHLD at its default
+// action is never left pending there), and a pending instance is then taken
+// with sigwait() so it cannot fire later.
+class SignalWaiter
+{
+    public:
+        explicit SignalWaiter(const sigset_t &set);
+        ~SignalWaiter();
+        SignalWaiter(const SignalWaiter &) = delete;
+        SignalWaiter &operator=(const SignalWaiter &) = delete;
+
+        int wait(const timespec &timeout);
+
+    private:
+        sigset_t set_;
+        int kq_ = -1;
+};
 
 }
 

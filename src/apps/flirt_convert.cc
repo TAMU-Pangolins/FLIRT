@@ -1,6 +1,11 @@
-// flirt-convert: an mvme MVLC listfile archive -> <runId>_raw.root and
+// flirt-convert: mvme MVLC listfile archives -> <runId>_raw.root and
 // <runId>_histos.root as official mvme + mvme_root_client produce them, plus a
 // conversion report <runId>.flirt.json. Inputs are only ever read.
+//
+// Without --convert-one this is the batch parent (batch.cc), which runs one
+// child process per listfile. The child, `flirt-convert --convert-one
+// <listfile.zip> -o <outdir> ...`, converts a single listfile; it is the code
+// below.
 //
 // Input integrity checks run on every conversion (docs/design.md, "Input
 // integrity, strict by default"). If one fails, nothing is published and the
@@ -36,6 +41,7 @@
 #include "flirt/threaded_sink.h"
 #include "flirt/vme_config.h"
 #include "flirt_version.h"
+#include "batch.h"
 
 namespace es = mvme::event_server;
 namespace parser = mesytec::mvlc::readout_parser;
@@ -88,7 +94,8 @@ void install_hangup_handler()
 // ROOT installs its own signal handlers when it initializes, so this must run
 // after the RootWriter (and with it gROOT) exists. ROOT also ignores SIGINT
 // while it writes to a file (seen in /proc/<pid>/status SigIgn during the
-// fill), so a SIGINT sent to this process alone can be lost.
+// fill), so a SIGINT sent to this process alone can be lost; the batch parent
+// always follows up with SIGTERM.
 void install_stop_handlers()
 {
     install_stop_handler(SIGINT);
@@ -312,6 +319,7 @@ bool still_unchanged(const std::string &path, const flirt::FileIdentity &before)
     }
 }
 
+// One listfile: the child of a batch (--convert-one). argv[0] is the program.
 int convert_one(int argc, char *argv[])
 {
     install_hangup_handler();
@@ -626,5 +634,11 @@ int convert_one(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
-    return convert_one(argc, argv);
+    if (argc > 1 && std::string(argv[1]) == "--convert-one")
+    {
+        std::vector<char *> args{ argv[0] };
+        args.insert(args.end(), argv + 2, argv + argc);
+        return convert_one(static_cast<int>(args.size()), args.data());
+    }
+    return flirt::run_batch(argc, argv);
 }
