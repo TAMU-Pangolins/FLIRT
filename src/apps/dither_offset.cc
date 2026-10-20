@@ -299,7 +299,8 @@ OfficialRaw read_official_raw(const std::string &path)
     raw.mtimeNs = static_cast<int64_t>(mtime.tv_sec) * 1000000000 + mtime.tv_nsec;
 
     // ROOT cuts a local name at '#' or '?' and expands '$' and '~': it opens
-    // the descriptor's name instead, whatever the file is called.
+    // the descriptor's name instead, whatever the file is called (as
+    // flirt-waveforms, docs/design.md, "TUI", "Waveform view").
     const auto previous = SetErrorHandler(collect_root_errors);
     rootErrors.clear();
     {
@@ -494,8 +495,8 @@ bool is_listfile_input(const std::string &path)
 int run_find_dither_offset(int argc, char *argv[])
 {
     // --json-events: events on stdout (README "Events for programs"), on a
-    // copy of stdout while fd 1 points at stderr (stray library output cannot
-    // corrupt them).
+    // copy of stdout while fd 1 points at stderr (as flirt-waveforms: stray
+    // library output cannot corrupt them).
     bool events = false;
     for (int i = 1; i < argc; ++i)
         events = events || std::string(argv[i]) == "--json-events";
@@ -634,7 +635,7 @@ int run_official_raw_facts(int argc, char *argv[])
     if (argc != 3 && argc != 4)
         return 2;
     // The answer goes to a copy of stdout; fd 1 then points at stderr, so
-    // stray library output cannot corrupt it.
+    // stray library output cannot corrupt it (as flirt-waveforms).
     const int answerFd = fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 3);
     if (answerFd < 0 || dup2(STDERR_FILENO, STDOUT_FILENO) < 0)
         return 1;

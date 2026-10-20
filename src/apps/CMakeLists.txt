@@ -22,3 +22,13 @@ target_link_libraries(flirt-info PRIVATE flirt)
 target_compile_options(flirt-info PRIVATE -Wall -Wextra)
 add_dependencies(flirt-info mvme_templates)
 set_target_properties(flirt-info PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${FLIRT_PREFIX}/bin)
+
+# flirt-waveforms: reads a waveforms file for flirt-tui's waveform view, in a
+# process of its own (docs/design.md, "TUI", "Waveform view"). ROOT Core, RIO
+# and Tree, flirt_common and the nlohmann headers only: no Qt, mvme or flirt
+# library.
+add_executable(flirt-waveforms flirt_waveforms.cc waveform_reader.cc)
+target_include_directories(flirt-waveforms SYSTEM PRIVATE ${MVME_EXT}/nlohmann-json)
+target_link_libraries(flirt-waveforms PRIVATE flirt_common ROOT::Core ROOT::RIO ROOT::Tree)
+target_compile_options(flirt-waveforms PRIVATE -Wall -Wextra)
+set_target_properties(flirt-waveforms PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${FLIRT_PREFIX}/bin)
