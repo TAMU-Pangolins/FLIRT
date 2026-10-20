@@ -238,7 +238,8 @@ std::string format_rate(double perSecond)
 namespace
 {
 
-// Items a warning lists (not too much at once; the rest are in the report).
+// Items a warning or the rate line lists (not too much at once; the rest
+// are in the report, flirt-info --json and the CSV).
 constexpr size_t MaxListed = 3;
 
 // "14:40-14:42": a low-rate period, from its first minute to its last + 60 s.
@@ -264,6 +265,29 @@ std::string step_rates(const RateFlag &flag)
     return format_rate(flag.before) + " -> " + format_rate(flag.after) + "/s";
 }
 
+}
+
+std::string rate_flag_text(const RateFlag &flag)
+{
+    switch (flag.kind)
+    {
+        case RateFlag::Kind::Paused:
+            return "paused " + format_local_time(flag.from, "%H:%M:%S") + "-"
+                + (flag.to ? format_local_time(*flag.to, "%H:%M:%S") : std::string("end"));
+        case RateFlag::Kind::LowRate:
+            return "low rate " + low_rate_period(flag);
+        case RateFlag::Kind::Step:
+            return "rate change at " + format_local_time(flag.from, "%H:%M") + ": " + step_rates(flag);
+    }
+    return {};
+}
+
+std::string rate_flags_text(const RateAnalysis &rate)
+{
+    std::string text;
+    for (const auto &flag: rate.flags)
+        text += (text.empty() ? "" : "; ") + rate_flag_text(flag);
+    return text;
 }
 
 std::vector<std::string> rate_warnings(const RateAnalysis &rate, const std::string &allListed)
@@ -315,6 +339,23 @@ std::vector<std::string> rate_warning_texts(const RateAnalysis &rate, const std:
     if (low.size() > MaxListed || steps.size() > MaxListed)
         texts.back() += " (" + allListed + ")";
     return texts;
+}
+
+std::string rate_summary_text(const RateAnalysis &rate)
+{
+    std::vector<std::string> pauses;
+    for (const auto &flag: rate.flags)
+        if (flag.kind == RateFlag::Kind::Paused)
+            pauses.push_back(rate_flag_text(flag));
+    // Without a median (no minute with 30 live seconds) the low-rate and step
+    // checks never ran: say so rather than "no low rate ... found".
+    std::string text = rate.median ? "median " + format_rate(*rate.median) + "/s"
+                                   : std::string("not checked (no minute with 30 s of recording)");
+    if (!pauses.empty())
+        text += "; " + first_items(pauses, "; ");
+    if (rate.median && rate_warnings(rate, {}).empty())
+        text += "; no low rate or rate change found";
+    return text;
 }
 
 }

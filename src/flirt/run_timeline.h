@@ -94,7 +94,14 @@ double median_of(std::vector<double> values);
 // Rates as the texts show them: an integer from 10 on, else one decimal.
 std::string format_rate(double perSecond);
 
-// At most two warning lines, flirt-convert's: the low-rate
+// "paused 14:20:05-14:21:53" (an unresumed pause: "paused 14:20:05-end"),
+// "low rate 14:40-14:42", "rate change at 14:33: 320 -> 180/s"; local times.
+std::string rate_flag_text(const RateFlag &flag);
+
+// The flags joined by "; "; empty for none.
+std::string rate_flags_text(const RateAnalysis &rate);
+
+// At most two warning lines, flirt-convert's and flirt-info's: the low-rate
 // periods ("warning: low event rate 14:40-14:42, 14:55-14:56 (under 15 % of
 // the run's median rate, 290/s); check whether the beam was off") and the
 // rate changes ("warning: the event rate changed at 14:33 (320 -> 180/s),
@@ -109,6 +116,13 @@ std::vector<std::string> rate_warnings(const RateAnalysis &rate, const std::stri
 // changed at 14:33 (320 → 180 per second), 15:05 (180 → 300)"; if either lists
 // "and N more", the last one ends with " (<allListed>)".
 std::vector<std::string> rate_warning_texts(const RateAnalysis &rate, const std::string &allListed);
+
+// flirt-info's rate line: "median 290/s", "; paused ..." (at most 3, then
+// "and N more"), "; no low rate or rate change found" without warnings. The
+// low rates and changes are in the warning lines. Without a median (no minute
+// with 30 live seconds, so nothing was checked): "not checked (no minute with
+// 30 s of recording)", then the pauses.
+std::string rate_summary_text(const RateAnalysis &rate);
 
 }
 
