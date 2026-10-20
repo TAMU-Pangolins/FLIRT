@@ -29,13 +29,25 @@ struct RootOutputResult
     std::string histosFile;         // published <outDir>/<runId>_histos.root
     std::vector<size_t> eventHits;  // tree entries per VME event
     size_t totalDataBytes = 0;
+    // The files' sizes, as written (and as published).
+    uint64_t rawBytes = 0, histosBytes = 0;
+};
+
+// Wall time of the writer's stages, in seconds.
+struct RootTimings
+{
+    double setup = 0;       // BeginRun: classes generated and compiled, files and histograms created
+    double fill = 0;        // EventData batches: dither, tree and histogram fills
+    double writeClose = 0;  // raw file written at EndRun, then closed
+    double histograms = 0;  // histogram file written and closed at EndRun
+    double publish = 0;     // sync(): outputs flushed to disk (fsync) before the report is made
 };
 
 // Produces mvme_root_client's output files from event-server Messages, in this
-// process. Feed every message in order, then call close() after EndRun and
-// publish() to move the outputs into place. Outputs are written to a private
-// temporary directory inside outDir; existing files are never replaced, and
-// outputs not published are removed with the writer.
+// process. Feed every message in order, then call close() after EndRun,
+// sync() and publish() to move the outputs and the report into place. Outputs
+// are written to a private temporary directory inside outDir; existing files
+// are never replaced, and outputs not published are removed with the writer.
 class RootWriter
 {
     public:
@@ -47,11 +59,19 @@ class RootWriter
         void handleBatch(const MessageBatch &batch);
         // After EndRun: closes the output files, still in the private directory.
         void close();
-        // After close(): links the outputs into outDir (raw, then histograms)
-        // and returns their final paths. Never over an existing file: on a
-        // failure the files linked so far are taken back and nothing stays
-        // published.
-        RootOutputResult publish();
+        // After close(): flushes every output to disk (fsync) and returns
+        // what publish() will publish, its final paths and sizes, for the
+        // report.
+        RootOutputResult sync();
+        // After sync(): writes the report `reportContents` as `reportName` in
+        // the private directory and flushes it; links the outputs into outDir
+        // (raw, then histograms) and flushes outDir;
+        // links the report last and flushes outDir again. A report in outDir
+        // therefore means its whole set is there and on disk, even after a
+        // kill -9 or a power loss. Never over an existing file: on a failure
+        // the files linked so far are taken back and nothing stays published.
+        void publish(const std::string &reportName, const std::string &reportContents);
+        const RootTimings &timings() const;
 
     private:
         struct Private;
@@ -68,6 +88,8 @@ struct ExperimentCode
 };
 
 ExperimentCode render_experiment_code(const mvme::event_server::StreamInfo &streamInfo);
+
+std::string root_version();
 
 }
 

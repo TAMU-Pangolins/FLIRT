@@ -1,14 +1,28 @@
 // flirt-convert: an mvme MVLC listfile archive -> <runId>_raw.root and
-// <runId>_histos.root as official mvme + mvme_root_client produce them.
-// Inputs are only ever read.
+// <runId>_histos.root as official mvme + mvme_root_client produce them, plus a
+// conversion report <runId>.flirt.json. Inputs are only ever read.
+//
+// Input integrity checks run on every conversion (docs/design.md, "Input
+// integrity, strict by default"). If one fails, nothing is published and the
+// exit code is 1, unless --accept-damaged-input is given. Outputs are flushed
+// to disk (fsync) and published with the report last (RootWriter::publish), so
+// a report means a complete set.
 
+#include <QCryptographicHash>
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <climits>
+#include <fcntl.h>
 #include <iostream>
 #include <sys/stat.h>
+#include <thread>
+#include <unistd.h>
 
+#include "common/names.h"
 #include "common/platform.h"
+#include "common/utf8.h"
 #include "flirt/analysis_config.h"
 #include "flirt/integrity.h"
 #include "flirt/listfile.h"
@@ -17,6 +31,7 @@
 #include "flirt/root_output.h"
 #include "flirt/threaded_sink.h"
 #include "flirt/vme_config.h"
+#include "flirt_version.h"
 
 namespace es = mvme::event_server;
 namespace parser = mesytec::mvlc::readout_parser;
@@ -40,7 +55,8 @@ void usage(const char *argv0)
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
               << "                      mvme_root_client --single-run (default: 0)\n"
               << "  --accept-damaged-input\n"
-              << "                      convert and publish even if integrity checks fail\n";
+              << "                      convert and publish even if integrity checks fail; the\n"
+              << "                      report lists the failed checks\n";
 }
 
 std::string real_path(const std::string &path)
@@ -58,6 +74,79 @@ std::string own_prefix()
     auto bin = exe.substr(0, exe.rfind('/'));
     return bin.substr(0, bin.rfind('/'));
 }
+
+// The sha256 of a file, computed in a background thread alongside the
+// conversion, so it adds no wall time.
+class BackgroundSha256
+{
+    public:
+        explicit BackgroundSha256(const std::string &path)
+            : path_(path), thread_([this] { run(); })
+        { }
+
+        ~BackgroundSha256()
+        {
+            cancel_ = true;
+            if (thread_.joinable())
+                thread_.join();
+        }
+
+        // Waits for the hash; throws if the file could not be read.
+        std::string result()
+        {
+            if (thread_.joinable())
+                thread_.join();
+            if (!error_.empty())
+                throw std::runtime_error(error_);
+            return hex_;
+        }
+
+        // Time the hashing took; valid after result().
+        double seconds() const { return seconds_; }
+
+    private:
+        void run()
+        {
+            const auto t0 = Clock::now();
+            // The path's own bytes, as read_file().
+            const int fd = open(path_.c_str(), O_RDONLY | O_CLOEXEC);
+
+            if (fd < 0)
+            {
+                error_ = "cannot read " + path_;
+                return;
+            }
+
+            QCryptographicHash hash(QCryptographicHash::Sha256);
+            std::vector<char> buffer(4u << 20);
+
+            while (!cancel_)
+            {
+                auto bytes = read(fd, buffer.data(), buffer.size());
+                if (bytes < 0 && errno == EINTR)
+                    continue;
+                if (bytes < 0)
+                {
+                    error_ = "error reading " + path_;
+                    close(fd);
+                    return;
+                }
+                if (bytes == 0)
+                    break;
+                hash.addData(buffer.data(), static_cast<int>(bytes));
+            }
+            close(fd);
+
+            hex_ = hash.result().toHex().toStdString();
+            seconds_ = seconds_since(t0);
+        }
+
+        std::string path_;
+        std::string hex_, error_;
+        double seconds_ = 0;
+        std::atomic<bool> cancel_{false};
+        std::thread thread_; // last: starts once the members above exist
+};
 
 // Results of the integrity checks, in the order they were evaluated.
 // "unavailable" counts as a failure; "warn" does not.
@@ -80,6 +169,14 @@ class Checks
             for (const auto &e: entries_)
                 if (is_failure(e.result))
                     out << "  " << e.name << ": " << e.result << ": " << e.detail << "\n";
+        }
+
+        es::json toJson() const
+        {
+            es::json result = es::json::object();
+            for (const auto &e: entries_)
+                result[e.name] = { {"result", e.result}, {"detail", e.detail} };
+            return result;
         }
 
     private:
@@ -195,6 +292,9 @@ int convert_one(int argc, char *argv[])
 
         // I5: identities of the input files before anything reads them.
         const auto inputIdentity = flirt::file_identity(input);
+
+        // Absolute: the writer changes the working directory while it runs.
+        BackgroundSha256 inputSha256(flirt::absolute_path(input));
         Checks checks;
 
         // mvme reads module templates from <prefix>/templates (template_system.cc:201-205).
@@ -239,8 +339,9 @@ int convert_one(int argc, char *argv[])
         auto analysis = flirt::parse_analysis(analysisText, vmeConfig);
 
         // Output names as the writer derives them from the run ID (root_output.cc).
+        const std::string reportPath = outDir + "/" + listfile.runId + ".flirt.json";
         std::vector<std::string> outputs = { outDir + "/" + listfile.runId + "_raw.root",
-                                             outDir + "/" + listfile.runId + "_histos.root" };
+                                             outDir + "/" + listfile.runId + "_histos.root", reportPath };
 
         // I6: no output path may resolve to an input file (same device and inode).
         {
@@ -259,11 +360,18 @@ int convert_one(int argc, char *argv[])
             checks.set(check::OutputsNotInputs, "pass", "no output path resolves to an input file");
         }
 
+        // The report is published like the ROOT files: never over an existing file.
+        if (access(reportPath.c_str(), F_OK) == 0)
+            throw std::runtime_error("output exists, refusing to overwrite: " + reportPath);
+
         runInfo.runId = listfile.runId;
         runInfo.replaySourceFile = input.substr(input.rfind('/') + 1);
         rootOpts.outDir = outDir;
         rootOpts.runId = listfile.runId;
         rootOpts.mvmePrefix = own_prefix();
+
+        const double openConfigSeconds = seconds_since(t0);
+        const auto tWriter = Clock::now();
 
         flirt::RootWriter writer(rootOpts);
 
@@ -273,6 +381,8 @@ int convert_one(int argc, char *argv[])
         auto text = es::json::object().dump();
         serverInfo.contents.assign(text.begin(), text.end());
         writer.handleMessage(serverInfo);
+
+        const double writerInitSeconds = seconds_since(tWriter);
 
         // Producer and consumer in two threads, joined by message batches. The
         // consumer is joined by finish(), or on an exception by its destructor,
@@ -298,7 +408,10 @@ int convert_one(int argc, char *argv[])
         const auto [parserResult, parserDetail] = parser_health(pipeline);
         checks.set(check::Parser, parserResult, parserDetail);
 
-        // I5 once nothing reads the inputs any more.
+        // I5 once nothing reads the inputs any more, the hashing included.
+        const auto tHashWait = Clock::now();
+        const auto inputHash = inputSha256.result();
+        const double hashWaitSeconds = seconds_since(tHashWait);
         {
             std::string changed;
             if (!still_unchanged(input, inputIdentity))
@@ -313,10 +426,106 @@ int convert_one(int argc, char *argv[])
         if (failed && !acceptDamagedInput)
             return refuse_to_publish(checks, true);
 
-        const auto output = writer.publish();
+        // Every output flushed to disk first; the report is made from what
+        // will be published, then published last (RootWriter::publish).
+        const auto output = writer.sync();
+        const auto &rt = writer.timings();
 
+        es::json report;
+        report["flirt"] = { {"version", FLIRT_GIT_DESCRIBE}, {"mvme", MVME_GIT_DESCRIBE},
+                            {"root", flirt::root_version()} };
+        report["status"] = failed ? "accepted-with-failed-checks" : "ok";
+        report["checks"] = checks.toJson();
+        report["input"] = { {"path", real_path(input)}, {"sha256", inputHash},
+                            {"listfileEntry", listfile.listfileEntry}, {"runId", listfile.runId},
+                            {"size", static_cast<int64_t>(inputIdentity.size)},
+                            {"mtimeNs", static_cast<int64_t>(inputIdentity.mtime.tv_sec) * 1000000000
+                                        + inputIdentity.mtime.tv_nsec} };
+        report["analysis"] = { {"source", std::string("archive analysis.analysis")},
+                               {"sha256", es::json(nullptr)},
+                               {"version", analysis.version} };
+        report["options"] = { {"ditherOffset", rootOpts.ditherOffset},
+                              {"acceptDamagedInput", acceptDamagedInput} };
+        report["output"] = { {"raw", output.rawFile}, {"histos", output.histosFile},
+                             {"rawBytes", static_cast<int64_t>(output.rawBytes)},
+                             {"histosBytes", static_cast<int64_t>(output.histosBytes)},
+                             {"treeEntriesPerEvent", output.eventHits} };
+
+        const auto &pc = pipeline.parserCounters;
+        es::json parseResults = es::json::object();
+        for (size_t i = 0; i < pc.parseResults.size(); ++i)
+            if (pc.parseResults[i])
+                parseResults[parser::get_parse_result_name(static_cast<parser::ParseResult>(i))]
+                    = pc.parseResults[i];
+
+        report["replay"] = { {"buffersRead", pipeline.buffersRead}, {"bytesRead", pipeline.bytesRead},
+                             {"readoutEvents", pipeline.eventsProcessed},
+                             {"eventDataMessages", pipeline.messagesEmitted},
+                             {"parserExceptions", pipeline.parserExceptions},
+                             {"parseResults", parseResults},
+                             {"buffersNotParsedOk", pipeline.buffersNotParsedOk},
+                             {"buffersWithErrors", pipeline.buffersWithErrors},
+                             {"waveformDecoderMessages", pipeline.waveformDecoderMessages},
+                             {"parserWarnings", pipeline.parserWarnings.count},
+                             {"parserWarningMessages", pipeline.parserWarnings.messages},
+                             {"unusedBytes", pc.unusedBytes}, {"emptyStackFrames", pc.emptyStackFrames},
+                             {"ethPacketsProcessed", pc.ethPacketsProcessed},
+                             {"ethPacketLoss", pc.ethPacketLoss}, {"internalBufferLoss", pc.internalBufferLoss} };
+
+        // Module metas and, when used, the multi-event splitter's filters and counters.
+        es::json modules = es::json::array();
+        for (size_t ei = 0; ei < vmeConfig.events.size(); ++ei)
+            for (const auto &m: vmeConfig.events[ei].modules)
+            {
+                es::json filters = es::json::array();
+                for (const auto &f: m.eventHeaderFilters)
+                    filters.push_back(f.toStdString());
+                modules.push_back({ {"event", ei}, {"name", m.name.toStdString()},
+                                    {"type", m.typeName.toStdString()}, {"enabled", m.enabled},
+                                    {"moduleMeta", m.metaSource.toStdString()},
+                                    {"eventHeaderFilters", filters} });
+            }
+        report["modules"] = modules;
+
+        const auto &sc = pipeline.splitterCounters;
+        report["multiEventSplitting"] = { {"enabledForEvent", analysis.multiEventProcessing} };
+        if (pipeline.multiEventSplitting)
+            report["multiEventSplitting"]["counters"] = {
+                {"inputEvents", sc.inputEvents}, {"outputEvents", sc.outputEvents},
+                {"moduleHeaderMismatches", sc.moduleHeaderMismatches},
+                {"moduleEventSizeExceedsBuffer", sc.moduleEventSizeExceedsBuffer} };
+
+        // Seconds per stage. inputHashing runs alongside the other stages.
         const double totalSeconds = seconds_since(t0);
-        std::cerr << "wrote " << output.rawFile << ", " << output.histosFile
+        report["timing"] = { {"openConfig", openConfigSeconds},
+                             {"rootSetup", writerInitSeconds + rt.setup},
+                             {"replayParseExtract", pipeline.producerSeconds},
+                             {"rootFill", rt.fill},
+                             {"rootWriteClose", rt.writeClose},
+                             {"histograms", rt.histograms},
+                             {"publish", rt.publish},
+                             {"inputHashing", inputSha256.seconds()},
+                             {"inputHashingWait", hashWaitSeconds},
+                             {"total", totalSeconds} };
+
+        // The text, with invalid UTF-8 replaced (common/utf8.h), then the
+        // whole set published with the report last (RootWriter::publish): a
+        // report that cannot be made or written leaves nothing published.
+        {
+            std::string contents;
+            try
+            {
+                contents = flirt::dump_valid_utf8(report, 2) + "\n";
+            }
+            catch (const std::exception &e)
+            {
+                throw std::runtime_error("cannot make the report " + reportPath + ": " + e.what()
+                                         + "; nothing was published");
+            }
+            writer.publish(listfile.runId + ".flirt.json", contents);
+        }
+
+        std::cerr << "wrote " << output.rawFile << ", " << output.histosFile << ", " << reportPath
                   << " (" << pipeline.messagesEmitted << " events, " << totalSeconds << " s)\n";
         if (failed)
         {

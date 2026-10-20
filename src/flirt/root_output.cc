@@ -28,8 +28,10 @@
 #include <algorithm>
 #include <cassert>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <map>
 #include <stdexcept>
@@ -244,6 +246,11 @@ inline double make_quiet_nan()
 
 using MVMERunInfo = std::map<std::string, std::string>;
 
+double seconds_since(std::chrono::steady_clock::time_point t0)
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+
 // A failed write (e.g. a full disk) sets TFile::kWriteError, and ROOT only
 // prints it; such a file must not be published. `name` is the real name, not
 // the staging name ROOT knows the file by.
@@ -271,6 +278,8 @@ struct RootWriter::Private: public es::Client
     std::vector<std::string> tmpFiles;      // names created inside tmpDir (root_safe_name())
     std::string rawName, histosName;        // real names, as published
     bool endRunSeen = false;
+    bool synced = false;                    // sync() done; publish() may follow
+    RootTimings timings;
 
     void serverInfo(const es::Message &, const es::json &) override {}
     void beginRun(const es::Message &msg, const es::StreamInfo &streamInfo) override;
@@ -306,6 +315,8 @@ void RootWriter::Private::makeTmpDir(const std::string &base)
 // :577-929
 void RootWriter::Private::beginRun(const es::Message &, const es::StreamInfo &streamInfo)
 {
+    const auto t0 = std::chrono::steady_clock::now();
+
     if (streamInfo.infoJson.count("runInProgress")
         && static_cast<bool>(streamInfo.infoJson["runInProgress"]))
         throw std::runtime_error("run already in progress"); // :588-598
@@ -392,6 +403,8 @@ void RootWriter::Private::beginRun(const es::Message &, const es::StreamInfo &st
     gRandom->SetSeed(4357);
     for (uint64_t i = 0; i < opts.ditherOffset; ++i)
         gRandom->Rndm();
+
+    timings.setup += seconds_since(t0);
 }
 
 // Replaces compile_and_load_experiment_library (:488-534). The rendered header
@@ -516,6 +529,7 @@ void RootWriter::Private::eventData(const es::Message &, int eventIndex,
 // :1070-1091
 void RootWriter::Private::endRun(const es::Message &, const es::json &)
 {
+    auto t0 = std::chrono::steady_clock::now();
     auto file = eventTrees.front()->GetCurrentFile();
 
     if (file && !file->IsZombie() && file->IsOpen())
@@ -523,6 +537,9 @@ void RootWriter::Private::endRun(const es::Message &, const es::json &)
         file->Write();
         throw_if_write_error(file, rawName);
     }
+
+    timings.writeClose += seconds_since(t0);
+    t0 = std::chrono::steady_clock::now();
 
     if (histoOutFile)
     {
@@ -535,6 +552,7 @@ void RootWriter::Private::endRun(const es::Message &, const es::json &)
     }
     rawHistos = {};
     endRunSeen = true;
+    timings.histograms += seconds_since(t0);
 }
 
 void RootWriter::Private::cleanup()
@@ -575,8 +593,14 @@ void RootWriter::handleMessage(const es::Message &msg)
 
 void RootWriter::handleBatch(const MessageBatch &batch)
 {
+    const auto t0 = std::chrono::steady_clock::now();
+
     for (size_t i = 0; i < batch.size; ++i)
         d->handleMessage(batch.messages[i]);
+
+    // BeginRun and EndRun come alone and time themselves.
+    if (batch.size && batch.messages[0].type == es::MessageType::EventData)
+        d->timings.fill += seconds_since(t0);
 }
 
 void RootWriter::close()
@@ -586,24 +610,116 @@ void RootWriter::close()
 
     // The client never closes the tree file itself; ROOT closes it at process
     // exit (single-run mode). Closing it here writes the same final records.
+    const auto t0 = std::chrono::steady_clock::now();
     d->treeOutFile->Close();
     const bool writeError = d->treeOutFile->TestBit(TFile::kWriteError);
     delete d->treeOutFile;
     d->treeOutFile = nullptr;
     if (writeError)
         throw std::runtime_error("error writing " + d->rawName);
+    d->timings.writeClose += seconds_since(t0);
 }
 
-RootOutputResult RootWriter::publish()
+namespace
+{
+
+// Flushes fd to the disk itself. On macOS fsync() leaves the data in the
+// drive's own cache; F_FULLFSYNC flushes that too (fsync where the file
+// system refuses it). Elsewhere fsync().
+bool flush_to_disk(int fd)
+{
+#ifdef F_FULLFSYNC
+    if (fcntl(fd, F_FULLFSYNC) == 0)
+        return true;
+#endif
+    return fsync(fd) == 0;
+}
+
+// flush_to_disk() of a file or directory; throws naming `what` on failure.
+void sync_path(const std::string &path, const std::string &what)
+{
+    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        throw std::runtime_error("cannot open " + what + " to flush it: " + std::strerror(errno));
+    const bool ok = flush_to_disk(fd);
+    const int err = errno;
+    close(fd);
+    if (!ok)
+        throw std::runtime_error("error writing " + what + " (fsync): " + std::strerror(err));
+}
+
+uint64_t size_of(const std::string &path)
+{
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0)
+        throw std::runtime_error("cannot stat " + path + ": " + std::strerror(errno));
+    return static_cast<uint64_t>(st.st_size);
+}
+
+}
+
+RootOutputResult RootWriter::sync()
 {
     if (d->treeOutFile || d->tmpDir.empty())
-        throw std::runtime_error("publish() before close()");
+        throw std::runtime_error("sync() before close()");
+
+    const auto t0 = std::chrono::steady_clock::now();
+    auto staged = [this](const std::string &name) { return d->tmpDir + "/" + root_safe_name(name); };
+    std::vector<std::string> names = { d->rawName, d->histosName };
+    for (const auto &name: names)
+        sync_path(staged(name), d->opts.outDir + "/" + name);
+
+    d->result.rawFile = d->opts.outDir + "/" + d->rawName;
+    d->result.histosFile = d->opts.outDir + "/" + d->histosName;
+    d->result.rawBytes = size_of(staged(d->rawName));
+    d->result.histosBytes = size_of(staged(d->histosName));
+    d->synced = true;
+    d->timings.publish += seconds_since(t0);
+    return d->result;
+}
+
+void RootWriter::publish(const std::string &reportName, const std::string &reportContents)
+{
+    if (!d->synced || d->tmpDir.empty())
+        throw std::runtime_error("publish() before sync()");
     const std::string nothing = "; nothing was published";
     const auto &outDir = d->opts.outDir;
+
+    // The report, written and flushed in the private directory first.
+    const auto reportStaging = root_safe_name(reportName);
+    if (reportName.empty() || reportName.find('/') != std::string::npos
+        || std::find(d->tmpFiles.begin(), d->tmpFiles.end(), reportStaging) != d->tmpFiles.end())
+        throw std::runtime_error("publish(): bad report name '" + reportName + "'");
+    {
+        const auto path = d->tmpDir + "/" + reportStaging;
+        const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+        if (fd < 0)
+            throw std::runtime_error("cannot create the report " + outDir + "/" + reportName + ": "
+                                     + std::strerror(errno) + nothing);
+        d->tmpFiles.push_back(reportStaging);
+        std::string error;
+        for (size_t done = 0; error.empty() && done < reportContents.size();)
+        {
+            const auto n = write(fd, reportContents.data() + done, reportContents.size() - done);
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n <= 0)
+                error = n < 0 ? std::strerror(errno) : "short write";
+            else
+                done += static_cast<size_t>(n);
+        }
+        if (error.empty() && !flush_to_disk(fd))
+            error = std::string(std::strerror(errno)) + " (fsync)";
+        if (::close(fd) != 0 && error.empty())
+            error = std::strerror(errno);
+        if (!error.empty())
+            throw std::runtime_error("error writing " + outDir + "/" + reportName + ": " + error + nothing);
+    }
 
     // Publish without replacing: link() fails if the destination exists. If a
     // file cannot be published, the ones before it are taken back.
     std::vector<std::string> names = { d->rawName, d->histosName };
+    names.push_back(reportName);
     std::vector<std::string> published;
     auto take_back = [&](const std::string &error) {
         for (const auto &p: published)
@@ -612,17 +728,29 @@ RootOutputResult RootWriter::publish()
     };
     for (const auto &name: names)
     {
+        // The outputs' names are on disk before the report's appears.
+        if (name == reportName)
+        {
+            try { sync_path(outDir, outDir); }
+            catch (const std::exception &e) { take_back(e.what()); }
+        }
         auto src = d->tmpDir + "/" + root_safe_name(name);
         auto dst = outDir + "/" + name;
         if (link(src.c_str(), dst.c_str()) != 0)
             take_back("publishing " + dst + ": " + std::strerror(errno));
         published.push_back(dst);
     }
+    // The report's name on disk too. Too late to take anything back: the set
+    // is complete and published.
+    try { sync_path(outDir, outDir); }
+    catch (const std::exception &) { }
 
-    d->result.rawFile = outDir + "/" + d->rawName;
-    d->result.histosFile = outDir + "/" + d->histosName;
     d->cleanup();
-    return d->result;
+}
+
+const RootTimings &RootWriter::timings() const
+{
+    return d->timings;
 }
 
 ExperimentCode render_experiment_code(const es::StreamInfo &streamInfo)
@@ -637,6 +765,11 @@ ExperimentCode render_experiment_code(const es::StreamInfo &streamInfo)
     code.impl = render_template(exportImplTemplate, mu_data);
     code.linkDef = render_template(exportLinkDefTemplate, mu_data);
     return code;
+}
+
+std::string root_version()
+{
+    return gROOT->GetVersion();
 }
 
 }
