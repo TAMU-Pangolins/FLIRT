@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "batch.h"
+#include "common/failures.h"
 #include "common/names.h"
 #include "common/platform.h"
 #include "common/utf8.h"
@@ -101,6 +102,7 @@ struct Run
     pid_t pid = 0;
     FILE *log = nullptr;    // the child's stdout and stderr
     Clock::time_point start;
+    bool diskFull = false;  // the child said "No space left on device"
 };
 
 const char *const Results[] = { "converted", "failed", "unsupported", "interrupted", "not-started" };
@@ -368,6 +370,7 @@ void finish(Run &run, int status, bool stopping, const Options &opt, const Say &
 {
     run.seconds = seconds_since(run.start);
     const auto log = read_log(run.log);
+    run.diskFull = log.find("No space left on device") != std::string::npos;
     std::istringstream output(log);
     fclose(run.log);
     run.log = nullptr;
@@ -463,13 +466,34 @@ void finish(Run &run, int status, bool stopping, const Options &opt, const Say &
     }
 }
 
+// A run that ended badly in plain words (common/failures.h): "<headline>
+// (<check>: <why>)"; empty for the other results, which keep their note.
+flirt::Failure failure_of(const Run &run)
+{
+    if (run.result != "failed" && run.result != "unsupported" && run.result != "interrupted")
+        return {};
+    return flirt::explain_failure(run.result, run.note, run.diskFull, flirt::FailureFor::Cli);
+}
+
+std::string reason_text(const flirt::Failure &f)
+{
+    const auto why = f.check.empty() ? f.why : f.check + (f.why.empty() ? "" : ": " + f.why);
+    return f.headline + (why.empty() ? "" : " (" + why + ")");
+}
+
 // The result messages.
 void say_result(const Run &run, const Say &say)
 {
     std::ostringstream text;
-    text << run.runId << ": " << run.result << (run.note.empty() ? "" : " (" + run.note + ")");
+    const auto f = failure_of(run);
+    if (f.headline.empty())
+        text << run.runId << ": " << run.result << (run.note.empty() ? "" : " (" + run.note + ")");
+    else
+        text << run.runId << ": " << run.result << ": " << reason_text(f);
     text << ", " << run.seconds << " s";
     say(text.str());
+    if (!f.todo.empty())
+        say(run.runId + ": to do: " + f.todo);
 }
 
 }
@@ -632,7 +656,8 @@ int run_batch(int argc, char *argv[])
             else
             {
                 run.result = "failed";
-                say(run.runId + ": failed (" + run.note + ")");
+                say(run.runId + ": failed: " + reason_text(failure_of(run)));
+                say(run.runId + ": to do: " + failure_of(run).todo);
             }
         }
 
