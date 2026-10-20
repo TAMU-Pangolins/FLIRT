@@ -6,6 +6,7 @@ add_library(flirt STATIC
     extract.cc
     pipeline.cc
     integrity.cc
+    sampling_config.cc
     run_summary.cc
     listfile_scan.cc
     library_log.cc

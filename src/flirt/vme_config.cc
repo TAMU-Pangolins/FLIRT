@@ -11,6 +11,25 @@ namespace flirt
 // external/mvme/src/vme_config_version.cc
 static const int CurrentVMEConfigVersion = 4;
 
+// ConfigObject::read (vme_config.cc:161): symboltable_from_json
+// (vme_script_variables.cc:97-111) of "variable_table".
+static VariableTable read_variables(const QJsonObject &json)
+{
+    VariableTable result;
+    auto vars = json["variable_table"].toObject()["variables"].toObject();
+
+    for (auto it = vars.begin(); it != vars.end(); ++it)
+        result[it.key()] = it.value().toObject()["value"].toString();
+
+    return result;
+}
+
+// VMEScriptConfig::read_impl (vme_config.cc:369-372), ConfigObject::read.
+static ScriptConfig read_script(const QJsonObject &json)
+{
+    return { json["name"].toString(), json["vme_script"].toString(), read_variables(json) };
+}
+
 VMEConfig parse_vme_config(const std::string &json, const std::vector<ModuleMeta> &templates)
 {
     // listfile_replay.cc:231-236: parse, then take the "VMEConfig" object.
@@ -31,6 +50,7 @@ VMEConfig parse_vme_config(const std::string &json, const std::vector<ModuleMeta
     VMEConfig result;
     // vme_config.cc:1053-1054
     result.controllerType = root["vme_controller"].toObject()["type"].toString();
+    result.variables = read_variables(root);
 
     if (result.controllerType != "MVLC_ETH" && result.controllerType != "MVLC_USB")
         throw unsupported_input("unsupported VME controller "
@@ -44,6 +64,7 @@ VMEConfig parse_vme_config(const std::string &json, const std::vector<ModuleMeta
         EventConfig event;
         event.id = QUuid(eventJson["id"].toString());
         event.name = eventJson["name"].toString();
+        event.variables = read_variables(eventJson);
 
         for (const auto &moduleValue: eventJson["modules"].toArray())
         {
@@ -52,6 +73,13 @@ VMEConfig parse_vme_config(const std::string &json, const std::vector<ModuleMeta
             module.id = QUuid(moduleJson["id"].toString());
             module.name = moduleJson["name"].toString();
             module.enabled = moduleJson["enabled"].toBool(true);
+            module.variables = read_variables(moduleJson);
+
+            // ModuleConfig::read_impl (vme_config.cc:494-507), in the order
+            // vmeconfig_to_crateconfig.cc:427-438 runs them.
+            module.initScripts.push_back(read_script(moduleJson["vmeReset"].toObject()));
+            for (const auto &scriptValue: moduleJson["initScripts"].toArray())
+                module.initScripts.push_back(read_script(scriptValue.toObject()));
 
             // ModuleConfig::read_impl (vme_config.cc:520-528)
             std::optional<ModuleMeta> meta = find_module_meta(templates, moduleJson["type"].toString());

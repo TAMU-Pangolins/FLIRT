@@ -53,6 +53,14 @@ struct AnalysisConfig
     // Indexed by event index: MultiEventProcessing as mvme reads it
     // (uses_multi_event_splitting, analysis_util.cc:576-591).
     std::vector<bool> multiEventProcessing;
+    // Not part of the analysis: indexed by event index, the VME config module
+    // indexes (in module order) that get a tree in <runId>_waveforms.root
+    // (waveform_tree_modules(), sampling_config.h). Their traces are the
+    // decoded event of an analysis MDPP sample decoder of the module's type
+    // that reads the module, else of FLIRT's own call of mvme's decoder, which
+    // adds no event-server data, descriptions, dither draws or branches.
+    // Empty unless waveforms are requested.
+    std::vector<std::vector<int>> waveformModules;
 };
 
 // Parses an mvme .analysis document against the VME config. Refuses inputs

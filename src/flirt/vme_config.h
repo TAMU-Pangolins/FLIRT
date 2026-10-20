@@ -4,6 +4,7 @@
 #include <QByteArray>
 #include <QString>
 #include <QUuid>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -12,7 +13,21 @@
 namespace flirt
 {
 
-// The part of mvme's VMEConfig that shapes the ROOT output.
+// A ConfigObject's "variable_table" (vme_script_variables.cc:97-111): variable
+// name -> value.
+using VariableTable = std::map<QString, QString>;
+
+// A VMEScriptConfig: name, "vme_script" text (vme_config.cc:369-372) and its
+// own variables.
+struct ScriptConfig
+{
+    QString name;
+    QString text;
+    VariableTable variables;
+};
+
+// The part of mvme's VMEConfig that shapes the ROOT output, plus the module
+// init scripts and variables the waveform config check reads (sampling_config.h).
 struct ModuleConfig
 {
     QUuid id;
@@ -24,6 +39,11 @@ struct ModuleConfig
     QString typeName;
     std::vector<QByteArray> eventHeaderFilters;
     QString metaSource; // template file, "embedded ModuleMeta", or empty
+    // The scripts that initialize the module, in the order mvme runs them
+    // (vmeconfig_to_crateconfig.cc:415-440): "vmeReset", then every script in
+    // "initScripts". Their own "enabled" flag is not checked (vme_daq.cc:200-235).
+    std::vector<ScriptConfig> initScripts;
+    VariableTable variables;
 };
 
 struct EventConfig
@@ -31,11 +51,13 @@ struct EventConfig
     QUuid id;
     QString name;
     std::vector<ModuleConfig> modules;
+    VariableTable variables;
 };
 
 struct VMEConfig
 {
     QString controllerType;
+    VariableTable variables;
     std::vector<EventConfig> events;
 };
 

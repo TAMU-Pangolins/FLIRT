@@ -23,6 +23,7 @@ constexpr auto AnalysisEntry = "I3-analysis-entry";     // same for analysis.ana
 constexpr auto Parser = "I4-parser";                    // no parser exceptions, every parse result Ok
 constexpr auto InputUnchanged = "I5-input-unchanged";   // size, mtime, inode before and after
 constexpr auto OutputsNotInputs = "I6-outputs-not-inputs";
+constexpr auto WaveformConfig = "waveform-config";      // warnings only: VME sampling setting vs analysis vs traces
 }
 
 // Thrown when a check fails in a way that leaves nothing to convert, e.g. an
