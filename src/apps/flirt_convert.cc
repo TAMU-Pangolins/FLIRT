@@ -160,7 +160,7 @@ void throw_if_stop_requested()
 void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <listfile.zip> -o <outdir>"
-              << " [--dither-offset <N>] [--threads <T>]"
+              << " [--dither-offset <N>] [--threads <T>] [--no-waveforms]"
               << " [--official-waveform-branches]"
               << " [--accept-damaged-input] [--progress-fd <N>]\n"
               << "\n"
@@ -170,6 +170,8 @@ void usage(const char *argv0)
               << "                      with 1, 2, 4 and 8 compare finds the output IDENTICAL\n"
               << "                      (tested; the bytes on disk can differ)\n"
               << "                      (default: 1)\n"
+              << "  --no-waveforms      do not write <runId>_waveforms.root (all MDPP sample\n"
+              << "                      traces), which is written when a module records samples\n"
               << "  --official-waveform-branches\n"
               << "                      write the analysis's waveform sources into _raw.root and\n"
               << "                      _histos.root as mvme does (channel 0, 8 bits)\n"
@@ -506,6 +508,7 @@ int convert_one(int argc, char *argv[])
 
     std::string input, outDir;
     bool acceptDamagedInput = false;
+    bool noWaveforms = false;
     bool officialWaveformBranches = false;
     bool published = false;
     unsigned threads = 1;
@@ -545,6 +548,7 @@ int convert_one(int argc, char *argv[])
             progressFd = std::stoi(text);
         }
         else if (arg == "--accept-damaged-input") acceptDamagedInput = true;
+        else if (arg == "--no-waveforms") noWaveforms = true;
         else if (arg == "--official-waveform-branches") officialWaveformBranches = true;
         else if (arg == "-h" || arg == "--help") { usage(argv[0]); return 0; }
         else if (!arg.empty() && arg[0] == '-') { usage(argv[0]); return 2; }
@@ -630,7 +634,8 @@ int convert_one(int argc, char *argv[])
 
         // The modules with a tree in the waveforms file; they do not depend on
         // the analysis's decoders (docs/design.md, "Waveforms with any analysis").
-        analysis.waveformModules = flirt::waveform_tree_modules(vmeConfig, analysis, samplingSettings);
+        if (!noWaveforms)
+            analysis.waveformModules = flirt::waveform_tree_modules(vmeConfig, analysis, samplingSettings);
         const bool hasWaveformSources = flirt::has_waveform_sources(analysis);
 
         // Waveform sources are left out of the ROOT output unless
@@ -655,8 +660,8 @@ int convert_one(int argc, char *argv[])
         // module of analysis.waveformModules (waveform_output.h). Traces are
         // also collected for the analysis decoders' modules without a tree,
         // for the waveform config check.
-        const bool writeWaveforms = flirt::has_waveform_modules(analysis);
-        const bool collectTraces = writeWaveforms || hasWaveformSources;
+        const bool writeWaveforms = !noWaveforms && flirt::has_waveform_modules(analysis);
+        const bool collectTraces = !noWaveforms && (writeWaveforms || hasWaveformSources);
         std::vector<flirt::WaveformTreeSpec> waveformTrees;
         if (writeWaveforms)
             waveformTrees = flirt::waveform_trees(vmeConfig, analysis);
@@ -778,7 +783,7 @@ int convert_one(int argc, char *argv[])
         checks.set(check::Parser, parserResult, parserDetail);
 
         const auto waveformConfig = waveform_config_check(samplingSettings, vmeConfig, analysis, waveforms.get(),
-                                                          otherTraces, true);
+                                                          otherTraces, !noWaveforms);
         checks.set(check::WaveformConfig, waveformConfig.result, waveformConfig.detail);
 
         // I5 once nothing reads the inputs any more, the hashing included.
@@ -822,7 +827,7 @@ int convert_one(int argc, char *argv[])
                                {"version", analysis.version} };
         report["options"] = { {"ditherOffset", rootOpts.ditherOffset},
                               {"acceptDamagedInput", acceptDamagedInput},
-                              {"threads", threads},
+                              {"threads", threads}, {"noWaveforms", noWaveforms},
                               {"officialWaveformBranches", officialWaveformBranches} };
         report["output"] = { {"raw", output.rawFile}, {"histos", output.histosFile},
                              {"rawBytes", static_cast<int64_t>(output.rawBytes)},
@@ -898,7 +903,8 @@ int convert_one(int argc, char *argv[])
         report["matchesOfficialLayout"] = matchesOfficialLayout;
         // Where the waveforms are, for the note and the report's note.
         const std::string waveformsAre = !waveforms
-            ? "no module records samples FLIRT can decode, so there is no waveforms file"
+            ? (noWaveforms ? "no waveforms file (--no-waveforms)"
+                           : "no module records samples FLIRT can decode, so there is no waveforms file")
             : "all waveforms are in " + waveformsFile;
         if (!matchesOfficialLayout)
             report["note"] = "The analysis's " + std::to_string(omitted.size()) + " waveform (MDPP sample "

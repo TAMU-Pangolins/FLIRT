@@ -116,7 +116,7 @@ Failure failed_check(const std::string &check, const std::string &result, const 
 
 // "refused: <what>": what flirt-convert does not support (README "Input
 // integrity checks", the last paragraph).
-Failure unsupported(const std::string &what)
+Failure unsupported(const std::string &what, FailureFor where)
 {
     Failure f;
     f.why = what;
@@ -144,6 +144,12 @@ Failure unsupported(const std::string &what)
     {
         f.headline = "not an MVLC listfile FLIRT can read";
         f.todo = "FLIRT converts mvme's MVLC listfiles only. " + mvme;
+    }
+    else if (starts_with(what, "modules '") && contains(what, "would both get the waveform tree"))
+    {
+        f.headline = "two modules would get the same waveform tree";
+        f.todo = "Convert without the waveforms file (" + name(where, "untick Write waveforms file", "--no-waveforms")
+                 + ").";
     }
     else if (contains(what, "events that read out data"))
     {
@@ -252,7 +258,7 @@ Failure explain_failure(const std::string &result, const std::string &note, bool
         return f;
     }
     if (result == "unsupported")
-        return unsupported(starts_with(note, "refused: ") ? note.substr(9) : note);
+        return unsupported(starts_with(note, "refused: ") ? note.substr(9) : note, where);
     if (result != "failed")
         return f;
 

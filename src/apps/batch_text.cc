@@ -198,6 +198,8 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
         if (at(report, "/output/waveforms").is_string())
             note(start + "The full traces are in the run's _waveforms.root" + end,
                  start + "The full traces are in each _waveforms.root" + end);
+        else if (at(report, "/options/noWaveforms") == true)
+            note(start + "There is no waveforms file (--no-waveforms)" + end);
         else
             note(start + "No module records samples FLIRT can decode, so there is no waveforms file" + end);
     }

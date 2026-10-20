@@ -67,7 +67,7 @@ void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <input>... -o <outdir> [-j N] [--list <file>]"
               << " [--summary <file.json>]"
-              << " [--dither-offset <N>] [--threads <T>] [--official-waveform-branches]"
+              << " [--dither-offset <N>] [--threads <T>] [--no-waveforms] [--official-waveform-branches]"
               << " [--accept-damaged-input] [--json-events]\n"
               << "\n"
               << "Converts mvme MVLC listfile archives into <runId>_raw.root, <runId>_histos.root,\n"
@@ -94,6 +94,7 @@ void usage(const char *argv0)
               << "                      decoding; with 1, 2, 4 and 8 threads compare finds the\n"
               << "                      outputs IDENTICAL (tested; the bytes on disk can differ)\n"
               << "                      (default: 1)\n"
+              << "  --no-waveforms      do not write <runId>_waveforms.root (all MDPP sample traces)\n"
               << "  --official-waveform-branches\n"
               << "                      write the analysis's waveform sources into _raw.root and\n"
               << "                      _histos.root as mvme does (channel 0, 8 bits)\n"
@@ -116,6 +117,7 @@ struct Options
     unsigned threads = 1;   // per child; informational, not part of the skip rule
     std::string summaryPath;
     uint64_t ditherOffset = 0;
+    bool noWaveforms = false;
     bool officialWaveformBranches = false;
     bool acceptDamagedInput = false;
     bool jsonEvents = false;    // --json-events: stdout carries JSON events only
@@ -263,6 +265,7 @@ Options parse_args(int argc, char *argv[])
             opt.ditherOffset = parse_number(arg, value());
         }
         else if (arg == "--accept-damaged-input") opt.acceptDamagedInput = true;
+        else if (arg == "--no-waveforms") opt.noWaveforms = true;
         else if (arg == "--official-waveform-branches") opt.officialWaveformBranches = true;
         else if (arg == "--json-events") opt.jsonEvents = true;
         else if (!arg.empty() && arg[0] == '-') throw usage_error("unknown option " + arg, true);
@@ -414,6 +417,7 @@ Mismatch mismatch(const Options &opt, const Run &run)
 
     // The option, and what the block calls it.
     const std::tuple<const char *, json, const char *> options[] = {
+        { "noWaveforms", opt.noWaveforms, "--no-waveforms setting" },
         { "officialWaveformBranches", opt.officialWaveformBranches, "--official-waveform-branches setting" } };
     for (const auto &[name, value, noun]: options)
     {
@@ -585,6 +589,8 @@ bool launch(Run &run, const Options &opt, const char *argv0)
                                       "--threads", std::to_string(opt.threads),
                                       "--progress-fd", "3" };
     args.insert(args.end(), { "--dither-offset", std::to_string(opt.ditherOffset) });
+    if (opt.noWaveforms)
+        args.push_back("--no-waveforms");
     if (opt.officialWaveformBranches)
         args.push_back("--official-waveform-branches");
     if (opt.acceptDamagedInput)
@@ -904,6 +910,7 @@ json options_json(const Options &opt)
 {
     return { {"outputDir", opt.outDir}, {"jobs", opt.jobs}, {"threads", opt.threads},
              {"ditherOffset", opt.ditherOffset},
+             {"noWaveforms", opt.noWaveforms},
              {"officialWaveformBranches", opt.officialWaveformBranches},
              {"acceptDamagedInput", opt.acceptDamagedInput} };
 }
