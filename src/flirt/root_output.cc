@@ -30,6 +30,8 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
@@ -746,6 +748,15 @@ void RootWriter::publish(const std::string &reportName, const std::string &repor
             throw std::runtime_error("error writing " + outDir + "/" + reportName + ": " + error + nothing);
     }
 
+    // Test only: a kill -9 at a chosen step.
+    long killAfter = -1;
+    if (const char *text = std::getenv("FLIRT_TEST_KILL_AFTER_LINKS"))
+        killAfter = std::strtol(text, nullptr, 10);
+    auto maybe_killed = [killAfter](size_t links) {
+        if (killAfter >= 0 && static_cast<size_t>(killAfter) == links)
+            raise(SIGKILL);
+    };
+
     // Publish without replacing: link() fails if the destination exists. If a
     // file cannot be published, the ones before it are taken back.
     std::vector<std::string> names = { d->rawName, d->histosName };
@@ -757,6 +768,7 @@ void RootWriter::publish(const std::string &reportName, const std::string &repor
             unlink(p.c_str());
         throw std::runtime_error(error + nothing);
     };
+    maybe_killed(0);
     for (const auto &name: names)
     {
         // The outputs' names are on disk before the report's appears.
@@ -770,6 +782,7 @@ void RootWriter::publish(const std::string &reportName, const std::string &repor
         if (link(src.c_str(), dst.c_str()) != 0)
             take_back("publishing " + dst + ": " + std::strerror(errno));
         published.push_back(dst);
+        maybe_killed(published.size());
     }
     // The report's name on disk too. Too late to take anything back: the set
     // is complete and published.

@@ -78,6 +78,8 @@ class RootWriter
         // therefore means its whole set is there and on disk, even after a
         // kill -9 or a power loss. Never over an existing file: on a failure
         // the files linked so far are taken back and nothing stays published.
+        // Test only: FLIRT_TEST_KILL_AFTER_LINKS=<n> makes the process kill
+        // itself (SIGKILL) after its n-th link (0: before the first).
         void publish(const std::string &reportName, const std::string &reportContents);
         const RootTimings &timings() const;
 
