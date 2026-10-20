@@ -23,7 +23,7 @@ void usage(const char *argv0)
 {
     std::fprintf(stderr,
                  "usage: %s <cand_raw.root> <ref_raw.root> [--histos <cand_histos.root> <ref_histos.root>]"
-                 " [--max-report N] [--ignore-branch-regex <regex>]"
+                 " [--max-report N] [--ignore-branch-regex <regex>] [--allow-fused-sumwx2]"
                  " [--ignore-run-id]\n", argv0);
 }
 
@@ -46,6 +46,7 @@ int main(int argc, char *argv[])
     std::string histoCand, histoRef;
     size_t maxReport = 10;
     Ignore ignore;
+    FusedSumwx2 fused;
     bool ignoreRunId = false;
 
     for (int i = 1; i < argc; i++)
@@ -71,6 +72,8 @@ int main(int argc, char *argv[])
                 return 2;
             }
         }
+        else if (arg == "--allow-fused-sumwx2")
+            fused.allowed = true;
         else if (arg == "--ignore-run-id")
             ignoreRunId = true;
         else if (!arg.empty() && arg[0] == '-')
@@ -113,6 +116,9 @@ int main(int argc, char *argv[])
         std::printf("IGNORING branches, class members and histograms matching '%s'.\n"
                     "Basket layout, byte totals and element ids are then not compared.\n",
                     ignore.pattern.c_str());
+    if (fused.allowed)
+        std::printf("ALLOWING a histogram's fTsumwx2 to differ where one file holds the fused sum and the other"
+                    " the separate sum, recomputed from the raw tree (--allow-fused-sumwx2).\n");
     check_keys(cand.get(), ref.get(), make("raw: keys"), ignore);
     check_streamers(cand.get(), ref.get(), make("raw: streamer info"), ignore);
     check_run_info(cand.get(), ref.get(), make("raw: MVMERunInfo"), ignoreRunId);
@@ -128,7 +134,7 @@ int main(int argc, char *argv[])
         std::printf("candidate histos: %s\nreference histos: %s\n", histoCand.c_str(), histoRef.c_str());
         check_keys(hc.get(), hr.get(), make("histos: keys"), ignore);
         check_streamers(hc.get(), hr.get(), make("histos: streamer info"), ignore);
-        check_histos(hc.get(), hr.get(), make("histos: contents (bitwise)"), ignore);
+        check_histos(hc.get(), hr.get(), cand.get(), make("histos: contents (bitwise)"), ignore, fused);
     }
 
     bool identical = true;
@@ -145,6 +151,9 @@ int main(int argc, char *argv[])
     if (ignore.active())
         except += (except.empty() ? "" : " AND ") + std::string("IGNORED '") + ignore.pattern
             + "' (basket layout not compared)";
+    if (fused.histograms)
+        except += (except.empty() ? "" : " AND ") + std::string("fTsumwx2 fused rounding in ")
+            + std::to_string(fused.histograms) + " histogram" + (fused.histograms == 1 ? "" : "s");
     if (!identical)
         std::printf("DIFFERENT (%.1f s)\n", secs);
     else if (!except.empty())

@@ -54,7 +54,7 @@ void compare_axis(const std::string &what, const TAxis *a, const TAxis *b, Check
         c.diff(what + " variable bin edges differ");
 }
 
-void compare_histo(const std::string &name, TH1 *a, TH1 *b, Check &c)
+void compare_histo(const std::string &name, TH1 *a, TH1 *b, Check &c, FusedSumwx2 &fused)
 {
     auto text = [&](const std::string &what, const std::string &x, const std::string &y)
     {
@@ -67,6 +67,7 @@ void compare_histo(const std::string &name, TH1 *a, TH1 *b, Check &c)
             c.diff(name + " " + what + ": cand=" + format_double(x) + " ref=" + format_double(y));
     };
 
+    const size_t before = c.count; // differences of this histogram start here
     text("class", a->ClassName(), b->ClassName());
     text("title", a->GetTitle(), b->GetTitle());
     compare_axis(name + " x axis", a->GetXaxis(), b->GetXaxis(), c);
@@ -80,8 +81,13 @@ void compare_histo(const std::string &name, TH1 *a, TH1 *b, Check &c)
     a->GetStats(sa);
     b->GetStats(sb);
     static const char *statNames[] = {"fTsumw", "fTsumw2", "fTsumwx", "fTsumwx2"};
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 3; i++)
         number(statNames[i], sa[i], sb[i]);
+    // fTsumwx2 last: with --allow-fused-sumwx2 a histogram with no other
+    // difference is proven later from the raw tree (fused_sumwx2.cc).
+    const bool toProve = fused.allowed && !same_bits(sa[3], sb[3]);
+    if (!toProve)
+        number(statNames[3], sa[3], sb[3]);
 
     size_t shown = 0, differing = 0;
     for (int bin = 0; bin < a->GetNcells(); bin++) // includes under/overflow
@@ -99,11 +105,19 @@ void compare_histo(const std::string &name, TH1 *a, TH1 *b, Check &c)
     if (wa->GetSize() != wb->GetSize()
         || std::memcmp(wa->GetArray(), wb->GetArray(), sizeof(double) * wa->GetSize()))
         c.diff(name + " fSumw2 array differs");
+
+    if (toProve)
+    {
+        if (c.count == before)
+            fused.differing.push_back({ name, sa[3], sb[3] });
+        else
+            number(statNames[3], sa[3], sb[3]);
+    }
 }
 
 } // namespace
 
-void check_histos(TFile *cand, TFile *ref, Check &c, const Ignore &ignore)
+void check_histos(TFile *cand, TFile *ref, TFile *candRaw, Check &c, const Ignore &ignore, FusedSumwx2 &fused)
 {
     std::vector<std::string> ha, hb;
     collect_histos(cand, "", ignore, ha);
@@ -127,9 +141,10 @@ void check_histos(TFile *cand, TFile *ref, Check &c, const Ignore &ignore)
         }
         a->SetDirectory(nullptr);
         b->SetDirectory(nullptr);
-        compare_histo(name, a.get(), b.get(), c);
+        compare_histo(name, a.get(), b.get(), c, fused);
     }
     for (const auto &name: ha)
         if (std::find(hb.begin(), hb.end(), name) == hb.end())
             c.diff("histogram only in candidate: " + name);
+    prove_fused_sumwx2(candRaw, cand, c, fused);
 }
