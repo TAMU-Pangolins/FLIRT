@@ -21,6 +21,9 @@ struct RootOutputOptions
     // BeginRun carries it with invalid UTF-8 replaced (extract.cc).
     std::string runId;
     uint64_t ditherOffset = 0;      // TRandom3(4357) draws to skip before the first value
+    // ROOT::EnableThreadSafety() before any other ROOT use, for another thread
+    // writing its own ROOT file (the waveform writer).
+    bool threadSafety = false;
 };
 
 struct RootOutputResult

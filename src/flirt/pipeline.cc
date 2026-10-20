@@ -60,9 +60,24 @@ constexpr size_t ReadoutBufferSize = 1024 * 1024;
 
 }
 
+bool has_waveform_sources(const AnalysisConfig &analysis)
+{
+    for (const auto &sources: analysis.dataSources)
+        for (const auto &src: sources)
+            if (src.kind == DataSourceConfig::Kind::MdppSampleDecoder)
+                return true;
+    return false;
+}
+
+bool has_waveform_modules(const AnalysisConfig &analysis)
+{
+    return std::any_of(analysis.waveformModules.begin(), analysis.waveformModules.end(),
+                       [](const std::vector<int> &modules) { return !modules.empty(); });
+}
+
 PipelineResult run_pipeline(const ListfileInfo &listfile, const VMEConfig &vmeConfig,
                             const AnalysisConfig &analysis, const RunInfo &runInfo,
-                            const BatchSink &sink, const ProgressFn &progress)
+                            const BatchSink &sink, bool collectTraces, const ProgressFn &progress)
 {
     const auto tStart = std::chrono::steady_clock::now();
     PipelineResult result;
@@ -106,7 +121,8 @@ PipelineResult run_pipeline(const ListfileInfo &listfile, const VMEConfig &vmeCo
         ++result.eventsProcessed;
 
         auto &msg = batch.next();
-        if (extractor.processEvent(eventIndex, moduleDataList, moduleCount, msg))
+        if (extractor.processEvent(eventIndex, moduleDataList, moduleCount, msg,
+                                   collectTraces ? &batch.nextTraces() : nullptr))
         {
             batch.commit();
             ++result.messagesEmitted;

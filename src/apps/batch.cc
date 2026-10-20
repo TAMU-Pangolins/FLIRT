@@ -69,8 +69,9 @@ void usage(const char *argv0)
               << " [--dither-offset <N>]"
               << " [--accept-damaged-input] [--json-events]\n"
               << "\n"
-              << "Converts mvme MVLC listfile archives into <runId>_raw.root, <runId>_histos.root\n"
-              << "and a report <runId>.flirt.json in <outdir>. Tested against mvme_root_client\n"
+              << "Converts mvme MVLC listfile archives into <runId>_raw.root, <runId>_histos.root,\n"
+              << "<runId>_waveforms.root (if a module records MDPP samples) and a\n"
+              << "report <runId>.flirt.json in <outdir>. Tested against mvme_root_client\n"
               << "--single-run for recordings of mvme 1.16.2-1.18.0 with one VME event, no event\n"
               << "builder, and the modules mdpp32_scp, mdpp32_qdc and mvlc_event_stamper (README,\n"
               << "\"Tested with\"); for anything else, compare one run against it first.\n"
@@ -285,6 +286,7 @@ Options parse_args(int argc, char *argv[])
 std::string raw_path(const Options &opt, const Run &run) { return opt.outDir + "/" + run.runId + "_raw.root"; }
 std::string histos_path(const Options &opt, const Run &run) { return opt.outDir + "/" + run.runId + "_histos.root"; }
 std::string report_path(const Options &opt, const Run &run) { return opt.outDir + "/" + run.runId + ".flirt.json"; }
+std::string waveforms_path(const Options &opt, const Run &run) { return opt.outDir + "/" + run.runId + "_waveforms.root"; }
 
 // What the conversion report records as the build (flirt_convert.cc). ROOT's
 // version from the headers, as gROOT->GetVersion() gives ROOT_RELEASE.
@@ -408,6 +410,17 @@ Mismatch mismatch(const Options &opt, const Run &run)
             return files_differ(path, "size differs from the report's");
     }
 
+    // The waveforms file, if the report records one; otherwise none may exist.
+    const auto waveforms = waveforms_path(opt, run);
+    if (!at("/output/waveformsBytes").is_null())
+    {
+        if (stat(waveforms.c_str(), &st) != 0)
+            return files_differ(waveforms, "is missing");
+        if (at("/output/waveformsBytes") != json(static_cast<int64_t>(st.st_size)))
+            return files_differ(waveforms, "size differs from the report's");
+    }
+    else if (exists(waveforms))
+        return files_differ(waveforms, "exists but the report records none");
     return {};
 }
 
@@ -692,7 +705,7 @@ void finish(Run &run, int status, bool stopping, const Options &opt, const Say &
         {
         }
         std::vector<std::string> present;
-        for (const auto &path: { raw_path(opt, run), histos_path(opt, run) })
+        for (const auto &path: { raw_path(opt, run), histos_path(opt, run), waveforms_path(opt, run) })
             if (exists(path))
                 present.push_back(path.substr(path.rfind('/') + 1));
         if (!report.empty())
@@ -805,7 +818,8 @@ RunBlock block_of(const Run &run, const Options &opt)
         row("why", run.why.why);
         // Only the run's files that are there, by their endings.
         std::vector<std::string> present;
-        for (const auto &path: { raw_path(opt, run), histos_path(opt, run), report_path(opt, run) })
+        for (const auto &path: { raw_path(opt, run), histos_path(opt, run), waveforms_path(opt, run),
+                                 report_path(opt, run) })
             if (exists(path))
                 present.push_back(path.substr(opt.outDir.size() + 1 + run.runId.size()));
         row("to do", "delete " + listed(present) + " of this run to convert it again");
@@ -1086,7 +1100,8 @@ int run_batch(int argc, char *argv[])
             return false;
         }
 
-        const std::string outputs[] = { raw_path(opt, run), histos_path(opt, run), report_path(opt, run) };
+        const std::string outputs[] = { raw_path(opt, run), histos_path(opt, run), waveforms_path(opt, run),
+                                        report_path(opt, run) };
         struct stat st;
         run.bytes = stat(run.input.c_str(), &st) == 0 ? static_cast<uint64_t>(st.st_size) : 0;
         if (std::none_of(std::begin(outputs), std::end(outputs), exists))

@@ -30,6 +30,7 @@
 #include <csignal>
 #include <fcntl.h>
 #include <iostream>
+#include <map>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
@@ -43,8 +44,10 @@
 #include "flirt/module_templates.h"
 #include "flirt/pipeline.h"
 #include "flirt/root_output.h"
+#include "flirt/sampling_config.h"
 #include "flirt/threaded_sink.h"
 #include "flirt/vme_config.h"
+#include "flirt/waveform_output.h"
 #include "flirt_version.h"
 #include "batch.h"
 
@@ -341,6 +344,134 @@ std::pair<std::string, std::string> parser_health(const flirt::PipelineResult &p
     return { "warn", detail };
 }
 
+// A value that may be unknown, as JSON: null if unknown.
+template <typename T>
+es::json or_null(const std::optional<T> &value)
+{
+    return value ? es::json(*value) : es::json(nullptr);
+}
+
+// The waveform config check (sampling_config.h), warnings only: per module the
+// report entry, and the warning and note lines for stderr.
+struct WaveformConfigCheck
+{
+    std::string result, detail;
+    es::json modules = es::json::array();
+    std::vector<std::string> messages;
+};
+
+WaveformConfigCheck waveform_config_check(const std::vector<flirt::SamplingSetting> &settings,
+                                          const flirt::VMEConfig &vmeConfig,
+                                          const flirt::AnalysisConfig &analysis,
+                                          const flirt::WaveformWriter *waveforms,
+                                          const std::map<std::pair<int, int>, uint64_t> &otherTraces,
+                                          bool waveformsRequested)
+{
+    WaveformConfigCheck check;
+    std::string warnings;
+    size_t passes = 0, notes = 0;
+
+    for (const auto &s: settings)
+    {
+        const auto *src = flirt::mdpp_sample_decoder(analysis, s.eventIndex, s.moduleIndex);
+        flirt::ModuleWaveforms mw;
+        mw.analysisSource = src ? src->name.toStdString() : std::string();
+        mw.tree = flirt::is_waveform_module(analysis, s.eventIndex, s.moduleIndex);
+        if (!mw.tree)
+            mw.whyNoTree = flirt::why_no_waveforms(vmeConfig, analysis, s);
+
+        // A tree module's traces, else those an analysis decoder decoded.
+        std::optional<flirt::ModuleTraceCounts> counts;
+        for (size_t i = 0; waveforms && i < waveforms->trees().size(); ++i)
+        {
+            const auto &spec = waveforms->trees()[i];
+            if (spec.eventIndex == s.eventIndex && spec.moduleIndex == s.moduleIndex)
+                counts = flirt::ModuleTraceCounts{ waveforms->stats()[i].traces,
+                                                   waveforms->stats()[i].tracesPerLength };
+        }
+        if (!counts && src && waveformsRequested)
+        {
+            const auto it = otherTraces.find({ s.eventIndex, s.moduleIndex });
+            counts = flirt::ModuleTraceCounts{ it == otherTraces.end() ? 0 : it->second, {} };
+        }
+
+        const auto r = flirt::compare_waveform_config(s, mw, counts ? &*counts : nullptr, waveformsRequested);
+
+        check.modules.push_back({ {"event", s.eventIndex}, {"module", s.module}, {"moduleType", s.moduleType},
+                                  {"sampling", or_null(s.sampling)}, {"samplingFrom", s.samplingFrom},
+                                  {"numberSamples", or_null(s.numberSamples)},
+                                  {"numberSamplesFrom", s.numberSamplesFrom},
+                                  {"decoderSource", src ? es::json(mw.analysisSource) : es::json(nullptr)},
+                                  {"traces", or_null(r.traces)},
+                                  {"tracesWithConfiguredLength", or_null(r.tracesWithConfiguredLength)},
+                                  {"result", r.result}, {"message", r.message} });
+
+        if (r.result == "warn")
+        {
+            check.messages.push_back("warning: waveforms: " + s.module + ": " + r.message);
+            warnings += (warnings.empty() ? "" : "; ") + s.module + ": " + r.message;
+        }
+        else if (r.result == "note")
+        {
+            check.messages.push_back("note: waveforms: " + s.module + ": " + r.message);
+            ++notes;
+        }
+        else if (r.result == "pass")
+            ++passes;
+    }
+
+    if (!waveformsRequested)
+        check.result = "skipped", check.detail = "--no-waveforms";
+    else if (!warnings.empty())
+        check.result = "warn", check.detail = warnings;
+    else
+        check.result = "pass", check.detail = std::to_string(settings.size()) + " MDPP module(s): "
+            + std::to_string(passes) + " pass, " + std::to_string(notes) + " note(s)";
+    return check;
+}
+
+// Producer thread, before the batch goes to the ROOT writer: numbers each
+// EventData message with its entry in its VME event's tree in _raw.root
+// (mvme_root_client fills once per EventData message,
+// mvme_root_client.cc:1060), moves its tree modules' traces to the waveform
+// writer (if any) and counts the traces of modules without a tree.
+void take_traces(flirt::MessageBatch &batch, std::vector<int64_t> &entries,
+                 flirt::WaveformBatch &out, flirt::WaveformWriter *writer,
+                 std::map<std::pair<int, int>, uint64_t> &otherTraces)
+{
+    for (size_t i = 0; i < batch.size; ++i)
+    {
+        const auto &msg = batch.messages[i];
+        if (msg.type != es::MessageType::EventData || msg.contents.empty())
+            continue;
+
+        const size_t eventIndex = msg.contents[0];
+        if (eventIndex >= entries.size())
+            throw std::runtime_error("EventData message for event " + std::to_string(eventIndex)
+                                     + " out of range");
+        const int64_t entry = entries[eventIndex]++;
+
+        for (auto &mt: batch.traces[i])
+        {
+            if (!mt.inFile || !writer)
+            {
+                otherTraces[{ static_cast<int>(eventIndex), mt.moduleIndex }] += mt.decoded.traces.size();
+                continue;
+            }
+            out.events.emplace_back();
+            auto &ev = out.events.back();
+            ev.eventIndex = static_cast<int>(eventIndex);
+            ev.moduleIndex = mt.moduleIndex;
+            ev.entry = entry;
+            ev.decoded = std::move(mt.decoded);
+        }
+        batch.traces[i].clear();
+    }
+
+    if (writer && !out.events.empty())
+        writer->push(out);
+}
+
 bool same_file(const std::string &path, const flirt::FileIdentity &identity)
 {
     struct stat st;
@@ -472,11 +603,30 @@ int convert_one(int argc, char *argv[])
         analysisText = listfile.analysisJson;
 
         auto analysis = flirt::parse_analysis(analysisText, vmeConfig);
+        const auto samplingSettings = flirt::sampling_settings(vmeConfig, analysis);
+
+        // The modules with a tree in the waveforms file; they do not depend on
+        // the analysis's decoders (docs/design.md, "Waveforms with any analysis").
+        analysis.waveformModules = flirt::waveform_tree_modules(vmeConfig, analysis, samplingSettings);
+        const bool hasWaveformSources = flirt::has_waveform_sources(analysis);
+
+        // All MDPP sample traces go to <runId>_waveforms.root, one tree per
+        // module of analysis.waveformModules (waveform_output.h). Traces are
+        // also collected for the analysis decoders' modules without a tree,
+        // for the waveform config check.
+        const bool writeWaveforms = flirt::has_waveform_modules(analysis);
+        const bool collectTraces = writeWaveforms || hasWaveformSources;
+        std::vector<flirt::WaveformTreeSpec> waveformTrees;
+        if (writeWaveforms)
+            waveformTrees = flirt::waveform_trees(vmeConfig, analysis);
+        const std::string waveformsName = listfile.runId + "_waveforms.root";
 
         // Output names as the writer derives them from the run ID (root_output.cc).
         const std::string reportPath = outDir + "/" + listfile.runId + ".flirt.json";
         std::vector<std::string> outputs = { outDir + "/" + listfile.runId + "_raw.root",
                                              outDir + "/" + listfile.runId + "_histos.root", reportPath };
+        if (writeWaveforms)
+            outputs.push_back(outDir + "/" + waveformsName);
 
         // I6: no output path may resolve to an input file (same device and inode).
         {
@@ -504,6 +654,8 @@ int convert_one(int argc, char *argv[])
         rootOpts.outDir = outDir;
         rootOpts.runId = listfile.runId;
         rootOpts.mvmePrefix = own_prefix();
+        // The waveform writer writes its own file in its own thread.
+        rootOpts.threadSafety = writeWaveforms;
 
         const double openConfigSeconds = seconds_since(t0);
         const auto tWriter = Clock::now();
@@ -518,12 +670,22 @@ int convert_one(int argc, char *argv[])
         serverInfo.contents.assign(text.begin(), text.end());
         writer.handleMessage(serverInfo);
 
+        // Created in the writer's private directory, published with its files.
+        // Destroyed before `writer`.
+        std::unique_ptr<flirt::WaveformWriter> waveforms;
+        if (writeWaveforms)
+            waveforms = std::make_unique<flirt::WaveformWriter>(
+                writer.addFile(listfile.runId, waveformsName), waveformTrees);
+
         const double writerInitSeconds = seconds_since(tWriter);
 
         // Producer and consumer in two threads, joined by message batches. The
         // consumer is joined by finish(), or on an exception by its destructor,
         // before `writer` is used again or destroyed.
         flirt::PipelineResult pipeline;
+        std::vector<int64_t> waveformEntries(vmeConfig.events.size());
+        flirt::WaveformBatch waveformBatch;
+        std::map<std::pair<int, int>, uint64_t> otherTraces; // (event, module) without a tree
         {
             flirt::ThreadedSink consumer([&](flirt::MessageBatch &batch)
                                          {
@@ -536,8 +698,12 @@ int convert_one(int argc, char *argv[])
                                            [&](flirt::MessageBatch &batch)
                                            {
                                                throw_if_stop_requested();
+                                               if (collectTraces)
+                                                   take_traces(batch, waveformEntries, waveformBatch,
+                                                               waveforms.get(), otherTraces);
                                                consumer.push(batch);
                                            },
+                                           collectTraces,
                                            progressFd < 0 ? flirt::ProgressFn() :
                                            [&](uint64_t processed, uint64_t total)
                                            {
@@ -545,13 +711,30 @@ int convert_one(int argc, char *argv[])
                                            });
             progress.finishing();
             consumer.finish();
+            if (waveforms)
+                waveforms->finish();
         }
         writer.close();
+
+        // Every EventData message is one entry in its event's tree.
+        if (waveforms)
+        {
+            int64_t entries = 0;
+            for (auto n: waveformEntries)
+                entries += n;
+            if (entries != static_cast<int64_t>(pipeline.messagesEmitted))
+                throw std::logic_error("waveform entry numbering covers " + std::to_string(entries)
+                                       + " of " + std::to_string(pipeline.messagesEmitted) + " events");
+        }
 
         checks.set(check::ListfileEntry, pipeline.listfileEntry.result(), pipeline.listfileEntry.detail());
 
         const auto [parserResult, parserDetail] = parser_health(pipeline);
         checks.set(check::Parser, parserResult, parserDetail);
+
+        const auto waveformConfig = waveform_config_check(samplingSettings, vmeConfig, analysis, waveforms.get(),
+                                                          otherTraces, true);
+        checks.set(check::WaveformConfig, waveformConfig.result, waveformConfig.detail);
 
         // I5 once nothing reads the inputs any more, the hashing included.
         const auto tHashWait = Clock::now();
@@ -598,6 +781,26 @@ int convert_one(int argc, char *argv[])
                              {"rawBytes", static_cast<int64_t>(output.rawBytes)},
                              {"histosBytes", static_cast<int64_t>(output.histosBytes)},
                              {"treeEntriesPerEvent", output.eventHits} };
+        std::string waveformsFile;
+        if (waveforms)
+        {
+            waveformsFile = output.extraFiles.at(0);
+            report["output"]["waveforms"] = waveformsFile;
+            report["output"]["waveformsBytes"] = static_cast<int64_t>(output.extraBytes.at(0));
+
+            es::json trees = es::json::array();
+            for (size_t i = 0; i < waveforms->trees().size(); ++i)
+            {
+                const auto &spec = waveforms->trees()[i];
+                const auto &st = waveforms->stats()[i];
+                trees.push_back({ {"tree", spec.name}, {"module", spec.module},
+                                  {"moduleType", spec.moduleType},
+                                  {"traces", st.traces}, {"samples", st.samples},
+                                  {"tracesOtherLength", st.tracesOtherLength} });
+            }
+            report["waveforms"] = trees;
+        }
+        report["waveformConfig"] = waveformConfig.modules;
 
         const auto &pc = pipeline.parserCounters;
         es::json parseResults = es::json::object();
@@ -643,7 +846,8 @@ int convert_one(int argc, char *argv[])
                 {"moduleHeaderMismatches", sc.moduleHeaderMismatches},
                 {"moduleEventSizeExceedsBuffer", sc.moduleEventSizeExceedsBuffer} };
 
-        // Seconds per stage. inputHashing runs alongside the other stages.
+        // Seconds per stage. Waveform decoding is part of replayParseExtract;
+        // inputHashing runs alongside the other stages.
         const double totalSeconds = seconds_since(t0);
         report["timing"] = { {"openConfig", openConfigSeconds},
                              {"rootSetup", writerInitSeconds + rt.setup},
@@ -652,6 +856,8 @@ int convert_one(int argc, char *argv[])
                              {"rootWriteClose", rt.writeClose},
                              {"histograms", rt.histograms},
                              {"publish", rt.publish},
+                             {"waveformFill", waveforms ? waveforms->fillSeconds() : 0.0},
+                             {"waveformWriteClose", waveforms ? waveforms->writeCloseSeconds() : 0.0},
                              {"inputHashing", inputSha256.seconds()},
                              {"inputHashingWait", hashWaitSeconds},
                              {"total", totalSeconds} };
@@ -675,8 +881,12 @@ int convert_one(int argc, char *argv[])
             published = true;
         }
 
-        std::cerr << "wrote " << output.rawFile << ", " << output.histosFile << ", " << reportPath
+        std::cerr << "wrote " << output.rawFile << ", " << output.histosFile << ", "
+                  << (waveformsFile.empty() ? "" : waveformsFile + ", ")
+                  << reportPath
                   << " (" << pipeline.messagesEmitted << " events, " << totalSeconds << " s)\n";
+        for (const auto &line: waveformConfig.messages)
+            std::cerr << line << "\n";
         if (failed)
         {
             std::cerr << "warning: published despite failed checks (--accept-damaged-input):\n";

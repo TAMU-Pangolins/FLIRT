@@ -159,6 +159,10 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
     b.outcome = "converted";
     b.rest = " in " + elapsed_text(seconds);
     auto row = [&](const std::string &label, const std::string &text) { b.rows.push_back({ label, text, {} }); };
+    auto note = [&](const std::string &text, const std::string &shared = {})
+    {
+        b.rows.push_back({ "note", text, shared.empty() ? text : shared });
+    };
     std::vector<std::string> warnings;
 
     // The tree entries: one per EventData message, so after multi-event
@@ -168,8 +172,20 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
 
     // The files this run wrote, by their endings.
     std::string files = "_raw.root   _histos.root";
+    if (at(report, "/output/waveforms").is_string())
+        files += "   _waveforms.root";
     row("files", files + "   .flirt.json");
 
+    // The waveform config check (flirt_convert.cc waveform_config_check()).
+    for (const auto &m: at(report, "/waveformConfig").is_array() ? at(report, "/waveformConfig") : json::array())
+    {
+        const auto result = m.value("result", std::string());
+        const auto text = "waveforms: " + m.value("module", std::string()) + ": " + m.value("message", std::string());
+        if (result == "warn")
+            warnings.push_back(text);
+        else if (result == "note")
+            note(text);
+    }
     // --accept-damaged-input: each failed check in plain words (common/failures.h).
     const auto checks = at(report, "/checks");
     if (checks.is_object())

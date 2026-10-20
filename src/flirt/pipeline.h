@@ -54,10 +54,21 @@ using ProgressFn = std::function<void (uint64_t bytesProcessed, uint64_t bytesTo
 // extractor. Hands the sink BeginRun, then the EventData messages of each
 // readout buffer, then EndRun. Uses no ROOT and no gRandom.
 //
+// collectTraces: every EventData message carries its waveform traces in the
+// batch (MessageBatch::traces). The traces are the decoder's output, before
+// any random is added.
+//
 // progress: see ProgressFn; empty for none.
 PipelineResult run_pipeline(const ListfileInfo &listfile, const VMEConfig &vmeConfig,
                             const AnalysisConfig &analysis, const RunInfo &runInfo,
-                            const BatchSink &sink, const ProgressFn &progress = {});
+                            const BatchSink &sink, bool collectTraces = false,
+                            const ProgressFn &progress = {});
+
+// True if the analysis has MDPP sample decoder (waveform) sources.
+bool has_waveform_sources(const AnalysisConfig &analysis);
+
+// True if a module has a tree in the waveforms file (AnalysisConfig::waveformModules).
+bool has_waveform_modules(const AnalysisConfig &analysis);
 
 }
 

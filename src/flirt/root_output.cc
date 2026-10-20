@@ -581,6 +581,9 @@ RootWriter::RootWriter(const RootOutputOptions &options)
     : d(std::make_unique<Private>())
 {
     d->opts = options;
+    // First, before any other ROOT use (TROOT.h).
+    if (options.threadSafety)
+        ROOT::EnableThreadSafety();
     gROOT->SetBatch(true);
 }
 
