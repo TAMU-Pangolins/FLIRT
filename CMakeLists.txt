@@ -43,3 +43,5 @@ endif()
 
 include(cmake/mvme_parts.cmake)
 include(cmake/mvme_root_event.cmake)
+
+add_subdirectory(src)
