@@ -22,6 +22,10 @@ struct Actions
     std::function<void()> cancel;
     std::function<void()> quit;
     std::function<void()> save;     // a remembered setting changed
+    // The Waveforms tab: a request for flirt-waveforms (the latest replaces
+    // one not sent yet), and no file shown any more (its reader stops).
+    std::function<void(const json &request)> waveforms;
+    std::function<void()> closeWaveforms;
     int width = 80, height = 24;    // the terminal, for scrolling and mouse hits
     // Milliseconds of a steady clock, for double-clicks; unset: steady_clock.
     std::function<int64_t()> clockMs;
@@ -30,9 +34,13 @@ struct Actions
 // Handles one event; true if it was used (Ctrl-C always is).
 bool handle_event(Model &m, const ftxui::Event &event, Actions &actions);
 
-// After an event or a new job state: the details following box 1's
-// row.
+// After an event or a new job state: the Waveforms tab's list and the file
+// shown (its reader stopped when none is), the details following box 1's
+// row, then the requests (refresh() sends them).
 void refresh(Model &m, Actions &actions);
+// Sends the waveform view's pending request, if any (after an event, and
+// after an answer was applied: a tree list asks for a frame).
+void send_waveform_request(Model &m, Actions &actions);
 
 }
 

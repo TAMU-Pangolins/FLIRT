@@ -50,8 +50,8 @@ enum class Item
 std::string next_compression(const std::string &name);
 
 // A view that opens in the right box, over its content (Browser, Help,
-// Command), or the quit question over the screen.
-enum class Dialog { None, Browser, Help, Command, Quit };
+// Command, the channel picker Channels), or the quit question over the screen.
+enum class Dialog { None, Browser, Help, Command, Channels, Quit };
 
 struct BrowserEntry
 {
@@ -62,7 +62,7 @@ struct BrowserEntry
 };
 
 // The file browser: listfile (add listfiles), analysis (one .analysis file),
-// output (a folder).
+// output (a folder); waveforms (one *_waveforms.root to look at).
 struct Browser
 {
     enum class Zone { List, Path, NewFolder, Buttons };
@@ -81,6 +81,64 @@ struct Browser
     std::string editText;
 };
 
+// The waveform view (docs/design.md, "TUI", "Waveform view"):
+// flirt-waveforms's answers as they came (README "Events for programs"). A
+// frame is one event's traces of one module.
+struct Waves
+{
+    bool open = false;              // shown, its requests sent
+    std::string file;
+    json trees = json::array();     // [{name, title, traces}]
+    int module = 0;                 // the tree asked for last (keys start from it)
+    json channel;                   // the filter asked for last: null (all) or a sorted list of channels
+    json frame;                     // the frame answer drawn, or null
+    std::string error;              // the last answer's error
+    uint64_t firstId = 0;           // this view's first request: older answers are another view's
+    uint64_t lastId = 0, shownId = 0;   // the latest request sent, the latest answer applied
+    int64_t wantPosition = -1;      // the position asked for last, -1 if it asked for an event
+    json outbox;                    // the request to send next, or null
+    // Y range own, per module (tree name): its numbers, and whether it is
+    // chosen (else the typical range).
+    struct Own
+    {
+        int lo = 0, hi = 0;
+        bool on = false;
+    };
+    std::map<std::string, Own> own;
+    int page = 0;                   // the grid: the page shown
+    bool going = false;             // `g`: the event being typed
+    std::string goText;
+    bool ranging = false;           // the own range being typed (box 2's Y range row)
+    std::string rangeText, rangeError;
+};
+
+// The channel picker, a view in the right box: the module's channels 0..max as
+// checkboxes.
+struct Picker
+{
+    std::string module;
+    int max = -1;                   // the grid: channels 0 to max
+    std::set<int> withTraces;       // the module's channels with traces (the others cannot be picked)
+    std::set<int> checked;
+    int cursor = 0;                 // the channel under the cursor
+    int button = -1;                // -1: in the grid; 0 All, 1 None, 2 Done
+};
+
+// A plot's ranges: x in samples from 0 to xMax, y in sample values.
+struct PlotRanges
+{
+    double xMax = 1, yMin = -1, yMax = 1;
+};
+
+// A row of box 1's Waveforms tab: a waveforms file published this session
+// or opened with + open.
+struct WaveEntry
+{
+    std::string path;
+    int64_t size = -1;
+    bool opened = false;
+};
+
 struct Model
 {
     // The help's first lines: the version, the machine and the user (empty
@@ -97,6 +155,7 @@ struct Model
     int box = 1;                // the focus
     int chosen = 1;             // the left box the right box shows (the focus when it is 1 or 2)
     int back = 0;               // where a view in the right box returns (the focus it was opened from)
+    bool wavesTab = false;      // box 1's tab: Listfiles or Waveforms
     bool logTab = false;        // the right box's tab (Listfiles, box 1 chosen): Details or Log
 
     int fileRow = 0;            // box 1's selected listfile
@@ -120,6 +179,30 @@ struct Model
     int helpScroll = 0;
     int commandScroll = 0;
     int quitChoice = 0;         // 0 Keep converting, 1 Stop and quit
+
+    // The Waveforms tab: its files, the one shown, what each file showed.
+    std::vector<WaveEntry> waveFiles;
+    int waveRow = 0, waveCursor = 0;
+    std::set<std::string> wavesNoted;       // a job's start and a published path, listed once
+    std::map<std::string, Waves> waveViews; // file -> its module, filter, position, own y ranges, page
+    int plotRow = 0;            // box 2's row: Module, Channels, Show, Y range, Traces
+    Waves waves;
+    uint64_t waveIds = 0;       // the last request id, over all files
+    // The waveform view's settings for the session, whatever the file (not in
+    // the settings file): Show (the grid, or overlaid), Traces, the play state
+    // and speed (indexes into the presets, plot_layout.h).
+    bool grid = true;
+    int tracesPreset = 0, speedPreset = 2;
+    bool playing = false;
+    int64_t lastStepMs = 0;     // the last step of the play
+    bool stepNow = false;       // the next tick steps at once (play just pressed)
+    bool fullPlot = false;      // `z`: the plot fills the screen
+    bool dragging = false;      // the left button held on the play bar
+    Picker picker;
+    // Over ssh (SSH_CONNECTION set when flirt-tui started): at most 100
+    // traces drawn at once, play at most 10 events a second.
+    bool ssh = false;
+    int screenWidth = 80, screenHeight = 24;    // the last known terminal size
 
     // The mouse: on unless --no-mouse (the help and command texts say which);
     // the last left press, for double-clicks and the guard against a press on
@@ -148,11 +231,12 @@ const json *run_for(const Model &m, const std::string &path);
 
 // A view shown in the right box (browser, help, command).
 bool is_view(Dialog d);
-// The left box the right box shows: `chosen`.
+// The left box the right box shows: box 1 in the Waveforms tab, else `chosen`.
 int chosen_box(const Model &m);
 // The focus to box 1, 2 or 3; box 1 or 2 is then the one chosen.
 void set_box(Model &m, int box);
 const FileEntry *selected_file(const Model &m);
+const WaveEntry *selected_wave(const Model &m);
 
 // "Convert 2 runs", "Stop", "Stopping...".
 std::string convert_label(const Model &m);
@@ -192,6 +276,51 @@ void browser_button(Model &m, int index);
 
 // The report's lines (pretty-printed JSON), read once per job.
 void load_report(Model &m, const std::string &path);
+
+// The waveform view (wave_model.cc).
+constexpr double SamplePeriodNs = 12.5;   // mvme's MdppDefaultSamplePeriod (mdpp_decode.h:21)
+// The run's _waveforms.root among its outputs (job.cc), or empty.
+std::string run_waveforms(const json *run);
+// The Waveforms tab's list: every converted or skipped run's waveforms file of
+// the job, once per job and path, before the files opened with + open (de-duplicated
+// by path); a run still converting never appears.
+void note_waveforms(Model &m);
+// A file chosen in the browser's waveforms mode: listed (if not yet),
+// selected, the Waveforms tab shown.
+void open_waveforms_file(Model &m, const std::string &path, int64_t size);
+// The file shown follows box 1's Waveforms tab: its selected file is shown
+// (as it was left: module, filter, position, own y ranges), and none outside the tab.
+void sync_waveforms(Model &m);
+// Shows this file: as it was left this session, else from its tree list.
+void show_waveforms(Model &m, const std::string &file);
+// Stops showing it; what it showed is kept for the file.
+void close_waveforms(Model &m);
+bool waves_reading(const Model &m);     // the latest request is not answered yet
+// A frame request for the current module with these fields; into the outbox.
+void request_frame(Model &m, const json &fields);
+// An answer (the helper's, or the reader's error with the request's id and
+// file): ignored for a closed view, another file or an id not newer than the
+// one shown. A tree list asks for the first frame of the first module with
+// traces (else the first module).
+void apply_waveform_answer(Model &m, const json &answer);
+// The own range typed in box 2's Y range row: Enter keeps it if valid
+// (else the refusal stays shown), Esc cancels (wave_model.cc).
+void start_range(Model &m);
+void choose_typical(Model &m);
+bool finish_range(Model &m);
+
+// Play (wave_play.cc). One step (+1 frame, never skipping) when the previous
+// step's answer has been applied and 1000/speed ms have passed since the last
+// step; at the last frame it pauses. True if it changed something drawn (it
+// paused); a step's request goes to the outbox.
+bool play_tick(Model &m, int64_t nowMs);
+// Space, a click on the play button: play (from the first frame if at the
+// last) or pause.
+void toggle_play(Model &m);
+void pause(Model &m);
+// `-` and `+`: the next preset, clamped; the speed label: faster, wrapping.
+void change_speed(Model &m, int delta, bool wrap = false);
+int speed(const Model &m);      // events per second
 
 }
 

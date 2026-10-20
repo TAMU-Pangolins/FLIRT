@@ -1,5 +1,5 @@
 // flirt-tui's right box (docs/design.md, "TUI", "Layout"): a run's Details
-// and the Log, the options form, and the views that open over them
+// and the Log, the options form, the plot, and the views that open over them
 // (the browser, the help, the command).
 
 #include <algorithm>
@@ -21,6 +21,10 @@ RightView right_view(const Model &m)
         return RightView::Help;
     if (m.dialog == Dialog::Command)
         return RightView::Command;
+    if (m.dialog == Dialog::Channels)
+        return RightView::Channels;
+    if (m.wavesTab)
+        return RightView::Plot;
     if (m.chosen == 2)
         return RightView::Form;
     return m.logTab ? RightView::Log : RightView::Details;
@@ -221,8 +225,8 @@ std::vector<Part> with_source(const Model &m, std::vector<Part> title, int w, co
     const int box = source_box(m);
     if (!box || title.size() < 2)
         return title;
-    const std::string name = box == 1 ? ("Listfiles")
-                                      : ("Options");
+    const std::string name = box == 1 ? (m.wavesTab ? "Waveforms" : "Listfiles")
+                                      : (m.wavesTab ? "Plot options" : "Options");
     const std::vector<Part> source = { part(name, edge_style(edge_of(m, box))), part(" → ", dim) };
     if (3 + width_of(title) + width_of(source) + (right.empty() ? 0 : 1 + width_of(right) + 1) > w)
         return title;
@@ -248,6 +252,82 @@ Element right_box(const Model &m, const Layout &l, Edge edge, Hits *hits)
         case RightView::Form:
             title = with_source(m, single_title("Details", edge), l.right, {});
             content = form_inner(m, inner, rows, edge, hits);
+            break;
+        case RightView::Plot:
+        {
+            PlotArea a;
+            a.width = inner;
+            a.rows = rows;
+            const auto d = drawn(m, a);
+            // The button last (as z): " z full window " (the key bar's
+            // words), or " full " where the box is too narrow for it. It
+            // depends on the box's width only, never on
+            // the frame: the long one where its room still holds a
+            // two-channel legend of two-digit channels (" ch 13 ch 14") and
+            // the pages' short form (" 25-31 of 31 ", shown if shorter than
+            // the room, as below).
+            // Before it, the grid's pages "ch 0-7 of 16" (the next page), or
+            // overlaid the legend: each channel drawn, bold in its colour, as
+            // many as fit.
+            title = single_title("Plot", edge);
+            auto full = part(" z full window ", color(Teal));
+            if (l.right - 3 - width_of(title) - 1 - (full.width + 1) <= width(" 25-31 of 31 "))
+                full = part(" full ", color(Teal));
+            full.e = hit(full.e, hits, { Target::Kind::Full });
+            int room = l.right - 3 - width_of(title) - 1 - (full.width + 1);
+            if (d.grid && d.pages > 1)
+            {
+                // At least one "─" before it (else the short form, else none).
+                auto pages = part(" " + page_label(d) + " ", dim);
+                if (pages.width >= room)
+                    pages = part(" " + page_label(d, true) + " ", dim);
+                pages.e = hit(pages.e, hits, { Target::Kind::Pages });
+                if (pages.width < room)
+                    right.push_back(pages);
+            }
+            else if (!d.grid)
+            {
+                // Overlaid: the legend, a channel beyond the y range with its
+                // mark (red, "▲2400"); the grid names its channels in its panels.
+                Part legend{ nullptr, 0 };
+                Elements chs;
+                for (const int c: frame_channels(m, a))
+                {
+                    const auto label = " ch " + std::to_string(c);
+                    const auto mark = beyond_mark(d, &c);
+                    if (width(label) + width(mark) + 2 > room)
+                        break;
+                    chs.push_back(text(label) | bold | color(channel_color(c)));
+                    if (!mark.empty())
+                        chs.push_back(text(mark) | color(Color::Red));
+                    legend.width += width(label) + width(mark);
+                    room -= width(label) + width(mark);
+                }
+                if (!chs.empty())
+                {
+                    chs.push_back(text(" ") | edge_style(edge));
+                    legend.e = hbox(chs);
+                    legend.width += 1;
+                    right.push_back(legend);
+                }
+            }
+            // The button only with a file shown (z and its click need one).
+            if (!right.empty() && m.waves.open)
+                right.push_back(part(edge_rule(edge), edge_style(edge)));
+            if (m.waves.open)
+                right.push_back(full);
+            // The source only where it fits beside them: the legend and the pages win.
+            title = with_source(m, title, l.right, right);
+            const auto frame = frame_label(m);
+            if (!frame.empty())
+                bottom = { part(" " + frame + " ", dim) };
+            content = plot_inner(m, inner, rows, hits);
+            break;
+        }
+        case RightView::Channels:
+            right = close_label(hits);
+            title = with_source(m, single_title("Channels", edge), l.right, right);
+            content = picker_inner(m, inner, rows, hits);
             break;
         case RightView::Browser:
             title = single_title(browser_title(m), edge);

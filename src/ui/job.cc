@@ -225,9 +225,11 @@ bool JobManager::start(const std::vector<std::string> &args, std::string &error,
     posix_spawnattr_setpgroup(&attr, 0);
     // macOS: every fd not set up by the file actions is closed in the child
     // (POSIX_SPAWN_CLOEXEC_DEFAULT). pipe_cloexec() there is pipe() then
-    // fcntl(FD_CLOEXEC), not atomic: a spawn between another
-    // thread's pipe() and fcntl() would pass that pipe to the child
-    // (docs/design.md, "macOS (Apple silicon)").
+    // fcntl(FD_CLOEXEC), not atomic, and flirt-tui spawns from two threads
+    // (flirt-convert, flirt-waveforms): a spawn between another
+    // thread's pipe() and fcntl() passed that pipe to the child, e.g.
+    // flirt-convert kept flirt-waveforms' stdout open, so the reader never saw
+    // EOF and flirt-tui hung on quit (docs/design.md, "macOS (Apple silicon)").
     // Linux: pipe2(O_CLOEXEC) is atomic.
     short flags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETPGROUP;
 #ifdef __APPLE__

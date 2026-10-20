@@ -22,21 +22,37 @@ struct Target
     enum class Kind
     {
         Box,            // box 1, 2 or 3 (`index`); every part inside it is smaller
-        Tab,            // a tab name: 2 Details, 3 Log
-        Add,            // box 1's "+ add"
+        Tab,            // a tab name: 0 Listfiles, 1 Waveforms, 2 Details, 3 Log
+        Add,            // box 1's "+ add" or "+ open"
         FileRow,        // a listfile row (`index`)
         FileList,       // the listfiles: its box gives the visible rows
+        WaveRow,        // a waveforms file row (`index`)
+        WaveList,       // the waveforms files
         Summary,        // box 2's options summary
+        PlotOption,     // box 2's plot option row (`index`)
         Item,           // an options form item (`item`)
         Convert,        // Convert or Stop
         Close,          // "Esc close" on the right box's edge
+        FramePrev,      // the plot's ‹
+        FrameNext,      // the plot's ›
+        GoTo,           // the plot's "go to"
         Key,            // a key name on the key bar (`key`)
         BrowserPath,    // the browser's path line
         BrowserRow,     // a browser entry (`index`)
         BrowserButton,  // a browser button (`index`)
         QuitButton,     // a quit dialog button (`index`)
-        EditLine,       // the browser's new folder name
+        EditLine,       // the browser's new folder name, the event being typed
+        // The waveform view:
+        Full,           // " z full window " on the plot's edge (as z)
+        Pages,          // the grid's "ch 0-7 of 16" on the edge (the next page, wrapping)
+        Play,           // ► or ‖ (Space)
+        Speed,          // the speed label (faster, wrapping)
+        PlayBar,        // the play bar: the frame under the pointer, and a drag
+        ShowChoice,     // box 2's Show: 0 grid, 1 overlaid
+        PickerChannel,  // the channel picker's channel (`index`)
+        PickerButton,   // its button (`index`: 0 All, 1 None, 2 Done)
         CompressionChoice, // a name on the form's Compression row (`index` in compressions())
+        RangeChoice,    // box 2's Y range: 0 typical, 1 own (its input line)
     };
     Kind kind = Kind::Box;
     int index = 0;
@@ -87,7 +103,7 @@ Layout layout(int width, int height);
 ftxui::Element render(const Model &m, int width, int height, Hits *hits = nullptr);
 
 // What the right box shows.
-enum class RightView { Details, Log, Form, Browser, Help, Command };
+enum class RightView { Details, Log, Form, Plot, Browser, Help, Command, Channels };
 RightView right_view(const Model &m);
 
 // The right box's lines where it shows lines (details, log, help, command)

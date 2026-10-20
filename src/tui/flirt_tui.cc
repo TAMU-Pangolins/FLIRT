@@ -7,11 +7,18 @@
 // (FTXUI's too) and waited for by a thread, which ends the screen's loop.
 // After the loop, with the terminal restored, a running job gets SIGINT and
 // is waited for, so nothing is half-published.
+//
+// The Waveforms tab reads through <its own directory>/flirt-waveforms
+// (flirt::WaveformReader), from one worker thread that keeps only the latest
+// request; it stops when the tab shows no file (box 1 back on Listfiles) and at
+// exit. The play is stepped by a ticker thread that posts ticks through the
+// same gate.
 
 #include <atomic>
 #include <chrono>
 #include <cerrno>
 #include <climits>
+#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -38,6 +45,7 @@
 #include "ui/files.h"
 #include "ui/job.h"
 #include "ui/start_args.h"
+#include "ui/waveforms.h"
 #include "view.h"
 
 namespace
@@ -209,6 +217,10 @@ int main(int argc, char *argv[])
     model.host = hostname();
     model.home = home_dir();
     model.mouse = mouse;    // not remembered in the settings file
+    // Over ssh the waveform view draws at most 100 traces at once and plays
+    // at most 10 events a second.
+    const char *sshConnection = std::getenv("SSH_CONNECTION");
+    model.ssh = sshConnection && *sshConnection;
     // <prefix>/settings/flirt-tui.json beside <prefix>/bin, or FLIRT_TUI_SETTINGS.
     const auto settingsFile = settings_path(self);
     {
@@ -254,6 +266,7 @@ int main(int argc, char *argv[])
     }
 
     flirt::JobManager jobs(convertExe);
+    flirt::WaveformReader waveReader(convertExe.substr(0, convertExe.rfind('/')) + "/flirt-waveforms");
     auto screen = ftxui::ScreenInteractive::Fullscreen();
     // Ctrl-C is a key in raw mode, handled by the screen (the quit dialog).
     screen.ForceHandleCtrlC(false);
@@ -267,7 +280,8 @@ int main(int argc, char *argv[])
     bool gateClosed = false;
     // A posted closure alone does not redraw (FTXUI 6.1.9
     // ScreenInteractive::HandleTask), so Event::Custom follows it, unless
-    // `redraw` is false.
+    // `redraw` is false (the play's ticks, which draw only when they change
+    // something).
     auto post = [&](std::function<void()> task, bool redraw = true) {
         std::lock_guard<std::mutex> lock(gateMutex);
         if (gateClosed)
@@ -276,6 +290,34 @@ int main(int argc, char *argv[])
         if (redraw)
             screen.PostEvent(ftxui::Event::Custom);     // draws again
     };
+    // From the loop's thread: draws again, unless the loop is ending.
+    auto redraw = [&] {
+        std::lock_guard<std::mutex> lock(gateMutex);
+        if (!gateClosed)
+            screen.PostEvent(ftxui::Event::Custom);
+    };
+
+    // The play: a ticker thread wakes every 10 ms (at 20 ms the ticks' phase
+    // against 50/s steps gave about 40 events a second) while the model plays
+    // (mirrored in `playing` after each event and task) and posts a tick; one
+    // tick waits at a time.
+    std::mutex tickMutex;
+    std::condition_variable tickCv;
+    std::atomic<bool> playing(false), tickPending(false), tickerQuit(false);
+    auto mirror_play = [&] {
+        const bool now = model.playing;
+        if (playing.exchange(now) != now && now)
+        {
+            // Under the ticker's mutex: it cannot miss the wake-up.
+            { std::lock_guard<std::mutex> lock(tickMutex); }
+            tickCv.notify_all();
+        }
+    };
+    auto steady_ms = [] {
+        using namespace std::chrono;
+        return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    };
+
     std::string why = "quit";
     bool ranJob = false;
     Actions actions;
@@ -303,13 +345,73 @@ int main(int argc, char *argv[])
     };
     actions.save = remember;
 
+    // The waveform view's worker: asks the reader for the latest request only
+    // (older ones not sent yet are dropped) and posts each answer.
+    std::mutex waveMutex;
+    std::condition_variable waveCv;
+    json wavePending;
+    bool waveQuit = false;
+    std::thread waveThread;
+    auto waveWorker = [&] {
+        for (;;)
+        {
+            json request;
+            {
+                std::unique_lock<std::mutex> lock(waveMutex);
+                waveCv.wait(lock, [&] { return waveQuit || !wavePending.is_null(); });
+                if (waveQuit)
+                    return;
+                request.swap(wavePending);
+            }
+            auto answer = waveReader.ask(request);
+            // The reader's own errors carry no id or file: the request's.
+            if (!answer.is_object())
+                answer = { {"error", "flirt-waveforms answered with something that is not JSON"} };
+            if (answer.find("id") == answer.end() || answer["id"].is_null())
+                answer["id"] = request["id"];
+            if (answer.find("file") == answer.end())
+                answer["file"] = request["file"];
+            post([&, answer] {
+                apply_waveform_answer(model, answer);
+                // The next step at once if it is due (a slow read slows the play).
+                play_tick(model, steady_ms());
+                send_waveform_request(model, actions);
+                mirror_play();
+            });
+        }
+    };
+    actions.waveforms = [&](const json &request) {
+        {
+            std::lock_guard<std::mutex> lock(waveMutex);
+            wavePending = request;
+        }
+        if (!waveThread.joinable())
+            waveThread = std::thread(waveWorker);
+        waveCv.notify_all();
+    };
+    // In the loop's thread, and after it: no flirt-waveforms outlives the view.
+    actions.closeWaveforms = [&] {
+        {
+            std::lock_guard<std::mutex> lock(waveMutex);
+            waveQuit = true;
+            wavePending = nullptr;
+        }
+        waveCv.notify_all();
+        waveReader.stop();      // a waiting ask() returns at once
+        if (waveThread.joinable())
+            waveThread.join();
+        waveReader.stop();      // one started meanwhile
+        std::lock_guard<std::mutex> lock(waveMutex);
+        waveQuit = false;
+    };
+
     auto view = ftxui::Renderer([&] {
         const auto size = ftxui::Terminal::Size();
         // FTXUI's TrackMouse turns on modes 1000, 1003, 1015 and 1006; with
         // 1003 every mouse move is an event and a full redraw, heavy over ssh.
         // In xterm-like terminals the tracking mode is one setting, so 1002
         // here switches it to presses, releases, the wheel and motion only
-        // while a button is held (tmux then shows
+        // while a button is held (the play bar's drag; tmux then shows
         // #{mouse_button_flag} 1, #{mouse_standard_flag} 0, #{mouse_all_flag}
         // 0); 1006 (SGR) stays. Written before the frame, every frame: FTXUI
         // turns 1003 on again when it resumes after Ctrl-Z, and still turns
@@ -324,6 +426,7 @@ int main(int argc, char *argv[])
         actions.width = size.dimx;
         actions.height = size.dimy;
         const bool used = handle_event(model, event, actions);
+        mirror_play();
         return used;
     });
 
@@ -348,10 +451,33 @@ int main(int argc, char *argv[])
                     {
                         model.job = job;
                         model.jobVersion = version;
+                        // A run's waveforms file into the Waveforms tab once it is published.
                         refresh(model, actions);
                     }
                 });
             }
+        }
+    });
+    std::thread tickerThread([&] {
+        for (;;)
+        {
+            {
+                std::unique_lock<std::mutex> lock(tickMutex);
+                tickCv.wait(lock, [&] { return tickerQuit.load() || playing.load(); });
+                if (tickerQuit)
+                    return;
+            }
+            if (!tickPending.exchange(true))
+                post([&] {
+                    tickPending = false;
+                    const bool changed = play_tick(model, steady_ms());
+                    send_waveform_request(model, actions);
+                    mirror_play();
+                    if (changed)
+                        redraw();
+                }, false);
+            std::unique_lock<std::mutex> lock(tickMutex);
+            tickCv.wait_for(lock, std::chrono::milliseconds(10), [&] { return tickerQuit.load(); });
         }
     });
     std::thread signalThread([&] {
@@ -374,6 +500,7 @@ int main(int argc, char *argv[])
         std::lock_guard<std::mutex> lock(gateMutex);
         gateClosed = true;
     }
+    actions.closeWaveforms();
     const auto atExit = jobs.state(0, std::chrono::milliseconds(0));
     if (atExit["job"].is_object() && atExit["job"].value("state", "") != "finished")
         std::cerr << "flirt-tui: stopping the running conversion...\n" << std::flush;
@@ -383,6 +510,12 @@ int main(int argc, char *argv[])
     jobs.shutdown();
     stateThread.join();
     signalThread.join();
+    {
+        std::lock_guard<std::mutex> lock(tickMutex);
+        tickerQuit = true;
+    }
+    tickCv.notify_all();
+    tickerThread.join();
 
     // A plain quit says nothing; a signal or an interrupted conversion does.
     if (why != "quit" || wasRunning)

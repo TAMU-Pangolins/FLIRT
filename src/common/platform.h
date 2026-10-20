@@ -30,8 +30,8 @@ std::string self_exe();
 
 // pipe2(fds, O_CLOEXEC). macOS has no pipe2: pipe(), then FD_CLOEXEC on both,
 // which is not atomic: a posix_spawn in another thread in between passes the
-// pipe on. Programs that spawn from several threads therefore add
-// POSIX_SPAWN_CLOEXEC_DEFAULT on macOS.
+// pipe on. Programs that spawn from several threads (flirt-tui:
+// src/ui/job.cc, spawn.cc) therefore add POSIX_SPAWN_CLOEXEC_DEFAULT on macOS.
 int pipe_cloexec(int fds[2]);
 
 // sigtimedwait(set, nullptr, timeout) for signals the caller has blocked in

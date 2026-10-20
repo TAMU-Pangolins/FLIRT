@@ -1,5 +1,6 @@
 // flirt-tui's file browser: the listfile, analysis and output modes over
-// list_directory/make_directory.
+// list_directory/make_directory, and the TUI's own waveforms mode (one
+// *_waveforms.root for the Waveforms tab).
 
 #include <algorithm>
 
@@ -54,6 +55,8 @@ void open_browser(Model &m, const std::string &mode)
     {
         const auto last = m.lastDir.find(mode);
         start = last != m.lastDir.end() ? last->second : "";
+        if (start.empty() && mode == "waveforms")
+            start = m.outputDir;
     }
     if (start.empty())
         start = m.home;
@@ -103,7 +106,9 @@ bool browse(Model &m, const std::string &requested)
         entry.listfile = e["listfile"].get<bool>();
         const bool shown = entry.type == "dir" || (b.mode == "listfile" && entry.listfile)
             || (b.mode == "analysis" && entry.type == "file" && entry.name.size() > 9
-                && entry.name.compare(entry.name.size() - 9, 9, ".analysis") == 0);
+                && entry.name.compare(entry.name.size() - 9, 9, ".analysis") == 0)
+            || (b.mode == "waveforms" && entry.type == "file" && entry.name.size() > 15
+                && entry.name.compare(entry.name.size() - 15, 15, "_waveforms.root") == 0);
         if (shown)
             b.entries.push_back(entry);
     }
@@ -140,11 +145,13 @@ std::vector<std::string> browser_buttons(const Model &m)
     }
     if (b.mode == "output")
         return { "Choose this folder", "New folder...", "Cancel" };
+    if (b.mode == "waveforms")
+        return { "Open", "Cancel" };
     return { "Choose", "Cancel" };
 }
 
 // enter: Enter or a double-click: a folder opened; a file added (listfile,
-// with the ones picked), chosen (analysis), the browser
+// with the ones picked), chosen (analysis) or opened (waveforms), the browser
 // closed. Else Space or a click on a file: picked (listfile: toggled).
 void browser_activate(Model &m, bool enter)
 {
@@ -183,7 +190,7 @@ void browser_activate(Model &m, bool enter)
         else
             b.picked.insert(e.id);
     }
-    else if (b.mode == "analysis")
+    else if (b.mode == "analysis" || b.mode == "waveforms")
     {
         b.picked = { e.id };
         if (enter)
@@ -238,6 +245,13 @@ void browser_ok(Model &m)
                                     [&](const BrowserEntry &x) { return b.picked.count(x.id) > 0; });
         if (e == b.entries.end())
             return;
+        if (b.mode == "waveforms")
+        {
+            // Into the Waveforms tab's list, shown there.
+            open_waveforms_file(m, join_path(b.path, e->name), e->size);
+            m.dialog = Dialog::None;
+            return;
+        }
         m.opts.analysis = "file";
         m.opts.analysisPath = join_path(b.path, e->name);
     }

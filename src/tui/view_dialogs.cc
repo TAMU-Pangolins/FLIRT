@@ -511,7 +511,7 @@ std::vector<Line> help_lines(const Model &m, int width)
     l.blank();
     l.add("FLIRT turns mvme's MVLC listfiles (.zip) into the ROOT files that official mvme and mvme_root_client "
           "make from them, without running mvme. This screen picks the runs, runs the conversion (flirt-convert) "
-          "and shows how it goes. Original listfiles are only ever "
+          "and shows how it goes, and shows the waveforms of a waveforms file. Original listfiles are only ever "
           "read: FLIRT never changes, moves or deletes them.");
     l.blank();
     if (!m.host.empty() || !m.user.empty())
@@ -523,7 +523,7 @@ std::vector<Line> help_lines(const Model &m, int width)
     l.add("Everywhere", "heading");
     l.key("Tab, Shift-Tab", "the next, previous box");
     l.key("1, 2, 3", "box 1, 2 or 3");
-    l.key("[, ]", "the tabs of the box you are in");
+    l.key("[, ]", "the tabs of the box you are in (boxes 1 and 3)");
     l.key("s", "convert, or stop the running conversion");
     l.key("c", "the terminal command for the last conversion");
     l.key("l", "the log (Listfiles)");
@@ -534,6 +534,7 @@ std::vector<Line> help_lines(const Model &m, int width)
     l.key("↑↓", "choose a run; the right box shows its details");
     l.key("PgUp, PgDn", "10 runs up, down");
     l.key("Home, End", "the first, last run");
+    l.key("[, ]", "the Waveforms tab");
     l.key("Enter", "into its details");
     l.key("Del, Backspace", "take the run off the list (not while converting)");
     l.key("a", "add listfiles");
@@ -564,10 +565,55 @@ std::vector<Line> help_lines(const Model &m, int width)
     }
     l.key("Esc", "back to box 2");
     l.blank();
+    l.add("Waveforms (box 1; a frame is one event's traces of one module)", "heading");
+    l.key("↑↓", "choose a file; the right box plots it");
+    l.key("[, ]", "the Listfiles tab");
+    l.key("←→", "previous, next frame");
+    l.key("PgUp, PgDn", "the grid: its pages of rows, if more than one; overlaid: 100 frames back, forward");
+    l.key("Home, End", "first, last frame");
+    l.key("g", "go to an event (type its number, Enter)");
+    l.key("Space", "play or pause (boxes 1 and 3, the full window); at the last frame it starts from the first");
+    l.key("-, + (or =)", "slower, faster play (1 to 50 events a second)");
+    l.key("z", "the plot in the full window, and back (from boxes 1, 2, 3)");
+    l.key("Enter", "into the plot");
+    l.key("Del, Backspace", "take the file off the list (the file stays)");
+    l.key("o", "open a waveforms file");
+    l.blank();
+    l.add("Plot options (box 2)", "heading");
+    l.key("↑↓", "Module, Channels, Show, Y range, Traces");
+    l.key("Space, Enter", "change the option; on Channels, pick them");
+    l.key("Module", "the next module, the same event");
+    l.key("Channels", "the channel picker in the right box");
+    l.key("Show", "the grid (a panel per channel, in rows of 4, each with its axes) or all channels in one plot "
+                  "(overlaid); where no row of the grid fits, the box shows overlaid and z the grid");
+    l.key("Y range", "the same for every channel and frame: typical (from the module's first 20,000 traces, "
+                     "rounded) or your own (type two numbers, e.g. -50 to 350, Enter); a trace beyond it is cut, "
+                     "its real peak in red (▲2325)");
+    l.key("Traces", "the last 1 to 100 events per channel, older ones dim");
+    l.key("←→", "previous, next frame");
+    l.blank();
+    l.add("Plot (box 3)", "heading");
+    l.key("←→", "previous, next frame; PgUp, PgDn, Home, End and g as in Waveforms");
+    l.key("Space", "play or pause; - and + the speed");
+    l.key("Esc", "back to box 1");
+    l.blank();
+    l.add("Full window (z)", "heading");
+    l.key("Esc, z", "back to the boxes; ?, Tab, 1, 2, 3, [ ] too, then what they do");
+    l.key("←→, Space", "as in the plot; PgUp, PgDn, Home, End, g, - and + too");
+    l.blank();
+    l.add("Channel picker", "heading");
+    l.key("↑↓←→", "move over the channels, down to the buttons");
+    l.key("Space", "pick a channel, press a button");
+    l.key("a, n", "all, none");
+    l.key("Enter", "done; none picked = all channels (those with traces)");
+    l.key("Esc", "cancel");
+    l.add("Over ssh (SSH_CONNECTION set): at most 100 traces drawn at once, the past events lowered for all "
+          "channels together; play at most 10 events a second.", "muted");
+    l.blank();
     l.add("The file browser", "heading");
     l.key("↑↓", "move");
     l.key("Space", "pick a file");
-    l.key("Enter", "open a folder; add a listfile (with the ones picked), choose a file");
+    l.key("Enter", "open a folder; add a listfile (with the ones picked), choose or open a file");
     l.key("Backspace", "the folder above");
     l.key("/, ~", "type a path");
     l.key("a", "add all in this folder (listfiles)");
@@ -580,9 +626,17 @@ std::vector<Line> help_lines(const Model &m, int width)
         l.add("Mouse", "heading");
         l.key("Click", "goes there: a box, a tab, a row; acts on an option, a tick box, a button, the keys at "
                        "the bottom");
-        l.key("Double-click", "as Enter: a run's details, box 2's options; in the browser, open a "
+        l.key("Double-click", "as Enter: a run's details, a file's plot, box 2's options; in the browser, open a "
                               "folder, add or choose a file");
-        l.key("Wheel", "scroll the box under it");
+        l.key("Wheel", "scroll the box under it; over the plot, the previous or next frame");
+        l.key("Play bar", "click or drag it: that frame");
+        l.key("‹ › ► ‖", "the previous, next frame; play, pause");
+        l.key("Speed (5/s)", "the next speed (after the fastest, the slowest)");
+        l.key("go to", "type an event");
+        l.key("z full window", "(full in a narrow window) the plot in the full window");
+        l.key("Page label", "(ch 0-15 of 32) the grid's next page");
+        l.key("Plot options", "a click on a row: as Space; on grid or overlaid, typical or own: that one");
+        l.key("Channel picker", "a click on a channel picks it; All, None, Done");
         l.add("To select text, hold Shift while you drag (⌥ Option in iTerm2; in macOS Terminal, ⌘R turns the "
               "mouse off and on), or start flirt-tui with --no-mouse. Tested in tmux; other terminals not yet "
               "checked.", "muted");
@@ -599,7 +653,8 @@ std::vector<Line> help_lines(const Model &m, int width)
 std::string browser_title(const Model &m)
 {
     static const std::map<std::string, std::string> titles = {
-        {"listfile", "Add listfiles"}, {"analysis", "Analysis file"}, {"output", "Output folder"} };
+        {"listfile", "Add listfiles"}, {"analysis", "Analysis file"}, {"output", "Output folder"},
+        {"waveforms", "Waveforms file"} };
     const auto found = titles.find(m.browser.mode);
     return found == titles.end() ? "Browser" : found->second;
 }
@@ -689,7 +744,8 @@ Element browser_inner(const Model &m, int inner, int height, Hits *hits)
     if (rows.size() == 1 && b.entries[0].up)
     {
         const std::string none = b.mode == "output" ? "No folders here." : b.mode == "listfile"
-            ? "No listfiles (.zip) or folders here." : "No .analysis files or folders here.";
+            ? "No listfiles (.zip) or folders here." : b.mode == "waveforms"
+            ? "No waveforms files (_waveforms.root) or folders here." : "No .analysis files or folders here.";
         Elements lines = { rows[0] };
         for (const auto &line: wrap(none, cw))
             lines.push_back(text(" " + line) | dim);
@@ -698,7 +754,8 @@ Element browser_inner(const Model &m, int inner, int height, Hits *hits)
     else if (rows.empty())
     {
         const std::string none = b.mode == "output" ? "No folders here." : b.mode == "listfile"
-            ? "No listfiles (.zip) or folders here." : "No .analysis files or folders here.";
+            ? "No listfiles (.zip) or folders here." : b.mode == "waveforms"
+            ? "No waveforms files (_waveforms.root) or folders here." : "No .analysis files or folders here.";
         Elements lines;
         for (const auto &line: wrap(none, cw))
             lines.push_back(text(" " + line) | dim);
@@ -720,7 +777,7 @@ Element browser_inner(const Model &m, int inner, int height, Hits *hits)
         bool enabled = true;
         if (label.rfind("Add all ", 0) == 0)
             enabled = addable_count(m) > 0;
-        else if (label.rfind("Add ", 0) == 0 || label == "Choose")
+        else if (label.rfind("Add ", 0) == 0 || label == "Choose" || label == "Open")
             enabled = !b.picked.empty();
         // Cyan only for the button you are on (Tab): a primary look without
         // the focus read as selected.
@@ -737,7 +794,7 @@ Element browser_inner(const Model &m, int inner, int height, Hits *hits)
     const std::string count = b.mode == "listfile"
         ? plural(files, "listfile") + " here · " + std::to_string(b.picked.size()) + " picked"
         : b.mode == "output" ? plural(b.entries.size() - (b.hasParent ? 1 : 0), "folder") + " here"
-        : plural(files, ".analysis file") + " here";
+        : b.mode == "waveforms" ? plural(files, "waveforms file") + " here" : plural(files, ".analysis file") + " here";
     low.push_back(text(" " + count) | dim);
 
     Elements all = top;

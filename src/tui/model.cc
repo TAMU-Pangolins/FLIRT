@@ -99,12 +99,12 @@ json start_body(const Model &m, std::string &error)
 
 bool is_view(Dialog d)
 {
-    return d == Dialog::Browser || d == Dialog::Help || d == Dialog::Command;
+    return d == Dialog::Browser || d == Dialog::Help || d == Dialog::Command || d == Dialog::Channels;
 }
 
 int chosen_box(const Model &m)
 {
-    return m.chosen;
+    return m.wavesTab ? 1 : m.chosen;
 }
 
 void set_box(Model &m, int box)
@@ -118,6 +118,12 @@ const FileEntry *selected_file(const Model &m)
 {
     return m.fileRow >= 0 && m.fileRow < static_cast<int>(m.files.size()) ? &m.files[static_cast<size_t>(m.fileRow)]
                                                                           : nullptr;
+}
+
+const WaveEntry *selected_wave(const Model &m)
+{
+    return m.waveRow >= 0 && m.waveRow < static_cast<int>(m.waveFiles.size())
+        ? &m.waveFiles[static_cast<size_t>(m.waveRow)] : nullptr;
 }
 
 const std::vector<Item> &form_items()

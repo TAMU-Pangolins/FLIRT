@@ -26,6 +26,8 @@ void request_quit(Model &m, Actions &a)
 {
     m.editing = false;
     m.browser.editing = false;
+    m.waves.going = false;
+    m.waves.ranging = false;
     if (busy(m))
     {
         m.dialog = Dialog::Quit;
@@ -41,6 +43,15 @@ void remove_file(Model &m, int row)
         return;
     m.files.erase(m.files.begin() + row);
     m.fileRow = m.fileCursor = std::max(0, std::min(row, static_cast<int>(m.files.size()) - 1));
+}
+
+void remove_wave(Model &m, int row)
+{
+    if (row < 0 || row >= static_cast<int>(m.waveFiles.size()))
+        return;
+    // The row only: the file stays.
+    m.waveFiles.erase(m.waveFiles.begin() + row);
+    m.waveRow = m.waveCursor = std::max(0, std::min(row, static_cast<int>(m.waveFiles.size()) - 1));
 }
 
 // Up/Down, PgUp/PgDn (10), Home/End on a list of n rows; false if not one of them.
@@ -59,11 +70,19 @@ bool list_key(int &row, int &cursor, int n, const Event &e)
     return true;
 }
 
-// [ and ]: box 3's tabs, Details and Log, toggled; a box without tabs
+void switch_tab(Model &m)
+{
+    m.wavesTab = !m.wavesTab;
+}
+
+// [ and ]: the tabs of the box you are in, toggled (both have two): box 1's
+// Listfiles and Waveforms, box 3's Details and Log; a box without tabs
 // ignores them (one key rule for tabs; Left and Right never switch tabs).
 void tab_key(Model &m)
 {
-    if (m.box == 3 && m.chosen == 1)
+    if (m.box == 1)
+        switch_tab(m);
+    else if (m.box == 3 && !m.wavesTab && m.chosen == 1)
     {
         m.logTab = !m.logTab;
         if (m.logTab)
@@ -79,10 +98,20 @@ void show_log(Model &m)
     m.logScroll = INT_MAX / 2;      // the end, clamped where it is drawn
 }
 
-void open_help(Model &m)
+void open_help(Model &m, int width)
 {
     m.dialog = Dialog::Help;
     m.helpScroll = 0;
+    if (!m.wavesTab)
+        return;
+    // In the Waveforms tab, at its keys.
+    const auto lines = help_lines(m, layout(width, 24).rightText());
+    for (size_t i = 0; i < lines.size(); ++i)
+        if (lines[i].text.rfind("Waveforms (box 1", 0) == 0)
+        {
+            m.helpScroll = static_cast<int>(i);
+            break;
+        }
 }
 
 // The details' report: shown or hidden, and scrolled to it.
@@ -157,6 +186,12 @@ bool box_event(Model &m, const Event &e, Actions &a)
             m.editing = false;
         return true;
     }
+    if (m.waves.going)
+        return wave_going_event(m, e);
+    if (m.waves.ranging)
+        return wave_range_event(m, e);
+    if (m.fullPlot)
+        return full_window_event(m, e, a);
 
     if (e == Event::Tab) set_box(m, m.box % 3 + 1);
     else if (e == Event::TabReverse) set_box(m, (m.box + 1) % 3 + 1);
@@ -170,10 +205,37 @@ bool box_event(Model &m, const Event &e, Actions &a)
         m.dialog = Dialog::Command;
         m.commandScroll = 0;
     }
-    else if (e == Event::Character('l')) show_log(m);
-    else if (e == Event::Character('?')) open_help(m);
-    else if (e == Event::Character('a')) { if (!busy(m)) open_browser(m, "listfile"); }
+    else if (e == Event::Character('l') && !m.wavesTab) show_log(m);
+    else if (e == Event::Character('?')) open_help(m, a.width);
+    else if (e == Event::Character('a') && !m.wavesTab) { if (!busy(m)) open_browser(m, "listfile"); }
+    else if (e == Event::Character('o') && m.wavesTab) open_browser(m, "waveforms");
     else if (e == Event::Character('o')) { if (!busy(m)) open_browser(m, "output"); }
+    else if (m.wavesTab)
+    {
+        if (play_key(m, e)) {}
+        else if (m.box == 1)
+        {
+            if (e == Event::ArrowDown || e == Event::ArrowUp)
+                list_key(m.waveRow, m.waveCursor, static_cast<int>(m.waveFiles.size()), e);
+            else if (e == Event::Delete || e == Event::Backspace) remove_wave(m, m.waveRow);
+            else if (e == Event::Return) { if (!m.waveFiles.empty()) m.box = 3; }
+            else if (e == Event::Character(' ')) toggle_play(m);
+            else
+                return frame_key(m, e);
+        }
+        else if (m.box == 2)
+        {
+            if (e == Event::ArrowDown) m.plotRow = std::min(4, m.plotRow + 1);
+            else if (e == Event::ArrowUp) m.plotRow = std::max(0, m.plotRow - 1);
+            else if (e == Event::Character(' ') || e == Event::Return) plot_option(m, m.plotRow);
+            else
+                return frame_key(m, e);
+        }
+        else if (e == Event::Escape) set_box(m, 1);
+        else if (e == Event::Character(' ')) toggle_play(m);
+        else
+            return frame_key(m, e);
+    }
     else if (m.box == 1)
     {
         if (list_key(m.fileRow, m.fileCursor, static_cast<int>(m.files.size()), e))
@@ -241,7 +303,7 @@ void follow_runs(Model &m)
 // chosen, the Details tab).
 void follow_details(Model &m)
 {
-    const auto *f = m.chosen == 1 && !m.logTab ? selected_file(m) : nullptr;
+    const auto *f = !m.wavesTab && m.chosen == 1 && !m.logTab ? selected_file(m) : nullptr;
     if (!f)
     {
         return;
@@ -342,13 +404,14 @@ bool dispatch_key(Model &m, const Event &e, Actions &a)
 {
     if (e == Event::CtrlC)
         request_quit(m, a);
-    else if (e == Event::Character('q') && !m.editing && !m.browser.editing
+    else if (e == Event::Character('q') && !m.editing && !m.browser.editing && !m.waves.going && !m.waves.ranging
              && m.dialog != Dialog::Quit)
         request_quit(m, a);
     else
         switch (m.dialog)
         {
             case Dialog::Browser: return browser_event(m, e, a);
+            case Dialog::Channels: return picker_event(m, e);
             case Dialog::Quit: return quit_dialog_event(m, e, a);
             case Dialog::None: return box_event(m, e, a);
             default: return lines_view_event(m, e, a);
@@ -377,11 +440,34 @@ bool handle_event(Model &m, const Event &event, Actions &a)
     return used;
 }
 
-void refresh(Model &m, Actions &)
+void refresh(Model &m, Actions &a)
 {
+    const bool wavesOpen = m.waves.open;
+    // The terminal's size, for the plots' layout the requests depend on (ssh).
+    m.screenWidth = a.width;
+    m.screenHeight = a.height;
+    note_waveforms(m);
     m.fileRow = std::max(0, std::min(m.fileRow, static_cast<int>(m.files.size()) - 1));
+    m.waveRow = std::max(0, std::min(m.waveRow, static_cast<int>(m.waveFiles.size()) - 1));
     follow_runs(m);
+    // The reader runs while the tab shows a file.
+    sync_waveforms(m);
+    if (wavesOpen && !m.waves.open && a.closeWaveforms)
+        a.closeWaveforms();
+    if (!m.waves.open)
+        m.fullPlot = m.dragging = false;
     follow_details(m);
+    send_waveform_request(m, a);
+}
+
+void send_waveform_request(Model &m, Actions &a)
+{
+    if (m.waves.outbox.is_null())
+        return;
+    json request;
+    request.swap(m.waves.outbox);
+    if (m.waves.open && a.waveforms)
+        a.waveforms(request);
 }
 
 }

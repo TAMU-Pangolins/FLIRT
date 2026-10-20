@@ -59,11 +59,11 @@ Event key_event(const std::string &name)
 }
 
 // A click goes there; a double-click is Enter: a
-// listfile's details, box 2's options, a browser
+// listfile's details, a waveforms file's plot, box 2's options, a browser
 // row (a folder opened, a file added or chosen).
 bool has_double_click(const Model &m, const Target &t)
 {
-    if (t.kind == Kind::FileRow || t.kind == Kind::Summary)
+    if (t.kind == Kind::FileRow || t.kind == Kind::WaveRow || t.kind == Kind::Summary)
         return true;
     return t.kind == Kind::BrowserRow && m.dialog == Dialog::Browser && t.index >= 0
         && t.index < static_cast<int>(m.browser.entries.size());
@@ -88,6 +88,16 @@ void main_click(Model &m, const Target *t, int box, bool doubleClick, Actions &a
         m.editing = false;
         m.goError.clear();
     }
+    if (m.waves.going || m.waves.ranging)
+    {
+        // The event or the own range being typed: a click elsewhere ends it
+        // as Esc.
+        if (t && t->kind == Kind::EditLine)
+            return;
+        m.waves.going = false;
+        m.waves.ranging = false;
+        m.waves.rangeError.clear();
+    }
     if (box)
         set_box(m, box);
     if (!t)
@@ -95,6 +105,9 @@ void main_click(Model &m, const Target *t, int box, bool doubleClick, Actions &a
     switch (t->kind)
     {
         case Kind::Tab:
+            if (t->index < 2)
+                m.wavesTab = t->index == 1;
+            else
             {
                 m.logTab = t->index == 3;
                 if (m.logTab)
@@ -102,7 +115,9 @@ void main_click(Model &m, const Target *t, int box, bool doubleClick, Actions &a
             }
             break;
         case Kind::Add:
-            if (!busy(m))
+            if (m.wavesTab)
+                open_browser(m, "waveforms");
+            else if (!busy(m))
                 open_browser(m, "listfile");
             break;
         case Kind::FileRow:
@@ -114,11 +129,20 @@ void main_click(Model &m, const Target *t, int box, bool doubleClick, Actions &a
                 m.logTab = false;
             }
             break;
+        case Kind::WaveRow:
+            m.waveRow = m.waveCursor = t->index;
+            if (doubleClick)
+                m.box = 3;
+            break;
         case Kind::Summary:
             // A click: box 2, as the key 2 (set_box above); a double-click:
             // then Enter, the options.
             if (doubleClick)
                 dispatch_key(m, Event::Return, a);
+            break;
+        case Kind::PlotOption:
+            m.plotRow = t->index;
+            plot_option(m, t->index);
             break;
         case Kind::Item:
             m.focus = t->item;
@@ -127,14 +151,64 @@ void main_click(Model &m, const Target *t, int box, bool doubleClick, Actions &a
         case Kind::Convert:
             go(m, a);
             break;
+        case Kind::FramePrev:
+            step_frame(m, -1);
+            break;
+        case Kind::FrameNext:
+            step_frame(m, 1);
+            break;
+        case Kind::GoTo:
+            start_going(m);
+            break;
         case Kind::CompressionChoice:
             // As the row's Space, straight to the name clicked.
             m.focus = Item::Compression;
             if (!busy(m))
                 m.opts.compression = compressions().at(static_cast<size_t>(t->index)).name;
             break;
+        case Kind::ShowChoice:
+            m.plotRow = 2;
+            set_show(m, t->index == 0);
+            break;
+        case Kind::RangeChoice:
+            m.plotRow = 3;
+            choose_range(m, t->index == 1);
+            break;
+        case Kind::Full:
+            if (m.waves.open)
+                set_full(m, !m.fullPlot);
+            break;
+        case Kind::Pages:
+            change_page(m, 1, true);
+            break;
+        case Kind::Play:
+            toggle_play(m);
+            break;
+        case Kind::Speed:
+            change_speed(m, 1, true);
+            break;
+        case Kind::Close:
+            // The full window's "Esc back".
+            dispatch_key(m, Event::Escape, a);
+            break;
         default:
             break;
+    }
+}
+
+// The channel picker: a channel toggles, a button acts.
+void picker_click(Model &m, const Target *t)
+{
+    if (t && t->kind == Kind::PickerChannel)
+    {
+        m.picker.button = -1;
+        m.picker.cursor = t->index;
+        picker_toggle(m, t->index);
+    }
+    else if (t && t->kind == Kind::PickerButton)
+    {
+        m.picker.button = t->index;
+        picker_button(m, t->index);
     }
 }
 
@@ -215,6 +289,8 @@ void click(Model &m, const Target *t, int box, int x, int y, bool doubleClick, A
             dispatch_key(m, Event::Escape, a);
         else if (m.dialog == Dialog::Browser)
             browser_click(m, t, doubleClick);
+        else if (m.dialog == Dialog::Channels)
+            picker_click(m, t);
         return;
     }
     if (is_view(m.dialog))
@@ -257,9 +333,15 @@ void scroll_list(int &cursor, int n, const ftxui::Box &box, int direction)
 
 void wheel(Model &m, const Mouse &mouse, Actions &a)
 {
-    if (m.editing || m.browser.editing || m.dialog == Dialog::Quit)
+    if (m.editing || m.browser.editing || m.waves.going || m.waves.ranging || m.dialog == Dialog::Quit)
         return;
     const int direction = mouse.button == Mouse::WheelDown ? 1 : -1;
+    if (m.fullPlot && m.dialog == Dialog::None)
+    {
+        // The full window: the previous or next frame, anywhere.
+        step_frame(m, direction);
+        return;
+    }
     Hits hits;
     int box = 0;
     target_at(m, mouse.x, mouse.y, a, hits, box);
@@ -272,6 +354,8 @@ void wheel(Model &m, const Mouse &mouse, Actions &a)
             scroll_list(m.fileCursor, static_cast<int>(m.files.size()), *list, direction);
             m.following = false;
         }
+        else if (const auto *waves = hits.part_at(Kind::WaveList, mouse.x, mouse.y))
+            scroll_list(m.waveCursor, static_cast<int>(m.waveFiles.size()), *waves, direction);
         return;
     }
     if (box != 3)
@@ -284,6 +368,8 @@ void wheel(Model &m, const Mouse &mouse, Actions &a)
         b.zone = Browser::Zone::List;
         b.cursor = n ? std::max(0, std::min(b.cursor + direction * WheelStep, n - 1)) : 0;
     }
+    else if (view == RightView::Plot)
+        step_frame(m, direction);
     else if (auto *offset = right_scroll(m))
     {
         if (view == RightView::Details)
@@ -294,12 +380,39 @@ void wheel(Model &m, const Mouse &mouse, Actions &a)
     }
 }
 
+// A drag on the play bar (mode 1002 reports motion while a button is held):
+// the frame under the pointer, x clamped to the bar, y ignored.
+void drag(Model &m, int x, Actions &a)
+{
+    Hits hits;
+    int box = 0;
+    target_at(m, x, 0, a, hits, box);
+    const auto *bar = hits.first(Kind::PlayBar);
+    if (!bar || m.dialog != Dialog::None)
+    {
+        m.dragging = false;
+        return;
+    }
+    bar_to(m, x, bar->x_min, bar->x_max - bar->x_min + 1);
+}
+
 }
 
 void mouse_event(Model &m, const Event &event, Actions &a)
 {
     Event e = event;    // Event::mouse() has no const overload
     const Mouse mouse = e.mouse();
+    if (mouse.motion == Mouse::Released)
+    {
+        m.dragging = false;
+        return;
+    }
+    if (mouse.motion == Mouse::Moved)
+    {
+        if (m.dragging && mouse.button == Mouse::Left)
+            drag(m, mouse.x, a);
+        return;
+    }
     if (mouse.motion != Mouse::Pressed)
         return;
     if (mouse.button == Mouse::WheelUp || mouse.button == Mouse::WheelDown)
@@ -323,6 +436,13 @@ void mouse_event(Model &m, const Event &event, Actions &a)
     const Dialog dialog = m.dialog;
     const std::string folder = m.browser.path;
     click(m, found, box, mouse.x, mouse.y, doubleClick, a);
+    // A press on the play bar: the frame under it, and a drag starts.
+    if (found && found->kind == Kind::PlayBar && dialog == Dialog::None && m.dialog == Dialog::None)
+        if (const auto *bar = hits.part_at(Kind::PlayBar, mouse.x, mouse.y))
+        {
+            bar_to(m, mouse.x, bar->x_min, bar->x_max - bar->x_min + 1);
+            m.dragging = true;
+        }
 
     last = Model::Press();
     // After a double-click the next press starts again.
