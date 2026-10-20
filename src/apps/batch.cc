@@ -170,6 +170,8 @@ struct Run
     uint64_t key = 0;       // the launch's number, for the progress display
     uint64_t watchId = 0;   // the watch's id of the file (Watcher::done)
     bool diskFull = false;  // the child said "No space left on device"
+    uint64_t dataBytes = 0; // watch: the listfile entry's uncompressed size, 0 if unknown
+    unsigned diskFullRetries = 0;   // watch: conversions stopped by a full disk
     std::string eventPhase; // --json-events: the last progress event's phase and percent
     int eventPercent = -1;
     Clock::time_point eventTime;
@@ -1246,7 +1248,7 @@ int run_batch(int argc, char *argv[])
     };
 
     // The runs to launch, in order: the batch's in input order; the watch's
-    // in natural order.
+    // in natural order, a run stopped by a full disk first.
     std::deque<Run *> queue;
     for (auto &run: runs)
         if (classify(run))
@@ -1292,6 +1294,10 @@ int run_batch(int argc, char *argv[])
         tell("watching " + opt.watchDir + " for finished runs (checked after "
              + std::to_string(opt.settleSeconds) + " s unchanged); outputs in " + opt.outDir
              + "; stop with Ctrl-C");
+        struct stat watched, out;
+        if (stat(opt.watchDir.c_str(), &watched) == 0 && stat(opt.outDir.c_str(), &out) == 0
+            && watched.st_dev == out.st_dev)
+            tell("note: the outputs go to the disk mvme writes to; another disk keeps the DAQ disk free");
         watcher = std::make_unique<Watcher>(opt.watchDir, opt.settleSeconds);
     }
 
@@ -1302,6 +1308,7 @@ int run_batch(int argc, char *argv[])
     bool started = false;
     Clock::time_point firstStart;
     uint64_t launches = 0;
+    std::string pausedFor;  // the run the watch waits for free space for
     const auto scanPeriod = std::chrono::seconds(2);
     auto nextScan = Clock::now();
 
@@ -1360,6 +1367,22 @@ int run_batch(int argc, char *argv[])
         return sig > 0;
     };
 
+    // The free space a watch run needs: 3x its listfile data, the entry's
+    // uncompressed size (at least the file's): the outputs are up to about
+    // 1.3x, and mvme's next run may need room on the same disk.
+    auto listfile_data = [](const Run &run) { return std::max(run.dataBytes, run.bytes); };
+    auto needed_bytes = [&](const Run &run) { return 3 * listfile_data(run); };
+
+    // A failed watch run is converted again when there is room if the disk
+    // was full (free space under what it needs, or the child's ENOSPC), at
+    // most 3 times, in case its outputs never fit.
+    auto stopped_by_full_disk = [&](const Run &run)
+    {
+        uint64_t bytes = 0;
+        std::string error;
+        return run.diskFull || !free_bytes(opt.outDir, bytes, error) || bytes < needed_bytes(run);
+    };
+
     // The watch is done with a file's attempt.
     auto handled = [&](const Run &run)
     {
@@ -1384,16 +1407,35 @@ int run_batch(int argc, char *argv[])
             {
                 auto &run = **it;
                 finish(run, status, stopping, opt, say);
-                say_result(run, say);
-                print_block(run);
-                events.send("result", result_json(opt, run));
-                handled(run);
+                if (opt.watch && run.result == "failed" && !stopping && run.diskFullRetries < 3
+                    && stopped_by_full_disk(run))
+                {
+                    ++run.diskFullRetries;
+                    say(run.runId + ": stopped by a full disk; nothing was published;"
+                        " converted when there is room");
+                    display.line(paint("!", Tone::Warning) + " " + paint.bold(run.runId) + "   "
+                                 + paint("stopped by a full disk", Tone::Warning)
+                                 + "; nothing was published; converted when there is room");
+                    run.result.clear();
+                    run.note.clear();
+                    run.exitCode = -1;
+                    run.diskFull = false;
+                    queue.push_front(&run);
+                }
+                else
+                {
+                    say_result(run, say);
+                    print_block(run);
+                    events.send("result", result_json(opt, run));
+                    handled(run);
+                }
                 it = running.erase(it);
             }
             else
                 ++it;
         }
 
+        bool scanned = false;
         if (opt.watch && !stopping && Clock::now() >= nextScan)
         {
             std::vector<std::string> lines;
@@ -1401,6 +1443,7 @@ int run_batch(int argc, char *argv[])
             std::vector<uint64_t> gone;
             watcher->scan(Clock::now(), lines, ready, gone);
             nextScan = Clock::now() + scanPeriod;
+            scanned = true;
             for (const auto &line: lines)
                 tell(line);
 
@@ -1427,6 +1470,7 @@ int run_batch(int argc, char *argv[])
                 run.input = file.path;
                 run.runId = run_id_from_path(file.path);
                 run.watchId = file.id;
+                run.dataBytes = file.dataBytes;
                 if (classify(run))
                 {
                     auto pos = std::find_if(queue.begin(), queue.end(),
@@ -1436,11 +1480,38 @@ int run_batch(int argc, char *argv[])
                 else
                     watcher->done(run.watchId);
             }
+            if (queue.empty())
+                pausedFor.clear();
         }
 
         while (!stopping && running.size() < opt.jobs && !queue.empty())
         {
             auto &run = *queue.front();
+            if (opt.watch)
+            {
+                // Paused: the free space is looked at again at each scan.
+                if (!pausedFor.empty() && !scanned)
+                    break;
+                uint64_t bytes = 0;
+                std::string error;
+                const bool known = free_bytes(opt.outDir, bytes, error);
+                const uint64_t needed = needed_bytes(run);
+                if (!known || bytes < needed)
+                {
+                    if (pausedFor != run.runId)
+                        tell("paused: " + opt.outDir
+                                     + (known ? " has " + format_gb(bytes) + " free"
+                                              : ": cannot read its free space (" + error + ")")
+                                     + "; converting " + run.runId + " needs " + format_gb(needed) + " (3× its "
+                                     + format_gb(listfile_data(run)) + " of listfile data); it resumes by itself"
+                                     " when there is room");
+                    pausedFor = run.runId;
+                    break;
+                }
+                if (!pausedFor.empty())
+                    tell("resumed: " + format_gb(bytes) + " free");
+                pausedFor.clear();
+            }
             queue.pop_front();
 
             say(run.runId + ": converting " + run.input);
