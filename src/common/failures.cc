@@ -178,6 +178,13 @@ Failure unsupported(const std::string &what, FailureFor where)
         f.headline = "the recording's VME setup is not supported";
         f.todo = mvme;
     }
+    else if (starts_with(what, "--dither-offset-from: "))
+    {
+        f.why = what.substr(22);
+        f.headline = "the dither offset cannot be taken from that file";
+        f.todo = "Give this run's official _raw.root (written by mvme_root_client), or give the offset with "
+                 "--dither-offset <N>; flirt-convert --find-dither-offset <file> prints a file's offset.";
+    }
     else
     {
         f.headline = "the input is not supported";

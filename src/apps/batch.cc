@@ -76,6 +76,8 @@ void usage(const char *argv0)
               << " [--experiment-name <name>] [--experiment-title <title>]"
               << " [--dither-offset <N>] [--threads <T>] [--no-waveforms] [--official-waveform-branches]"
               << " [--accept-damaged-input] [--json-events]\n"
+              << "       " << argv0 << " <listfile.zip> -o <outdir> --dither-offset-from <official _raw.root>"
+              << " [the conversion options above]\n"
               << "       " << argv0 << " --watch <dir> -o <outdir> [--settle <S>] [-j N] [--summary <file.json>]"
               << " [the conversion options above]\n"
               << "       " << argv0 << " --find-dither-offset <official _raw.root>...\n"
@@ -105,6 +107,10 @@ void usage(const char *argv0)
               << "  --experiment-title  mvme workspace setting Experiment/Title (default: empty)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
               << "                      mvme_root_client --single-run (default: 0)\n"
+              << "  --dither-offset-from <official _raw.root>\n"
+              << "                      find the dither offset of this run's official _raw.root\n"
+              << "                      and convert with it (one listfile; the file must hold\n"
+              << "                      the same run); the report records the offset and the file\n"
               << "  --find-dither-offset <official _raw.root>...\n"
               << "                      instead of converting: print each file's dither offset\n"
               << "                      (README, \"Dither offset\"; about a minute at most)\n"
@@ -143,6 +149,8 @@ struct Options
     std::string analysisFile, analysisSha256;
     std::string experimentName = "Experiment", experimentTitle;
     uint64_t ditherOffset = 0;
+    bool ditherOffsetGiven = false;
+    std::string ditherOffsetFrom;   // --dither-offset-from: the official _raw.root, absolute
     bool noWaveforms = false;
     bool defaultFilters = false;
     bool officialWaveformBranches = false;
@@ -327,6 +335,13 @@ Options parse_args(int argc, char *argv[])
         else if (arg == "--dither-offset")
         {
             opt.ditherOffset = parse_number(arg, value());
+            opt.ditherOffsetGiven = true;
+        }
+        else if (arg == "--dither-offset-from")
+        {
+            opt.ditherOffsetFrom = value();
+            if (opt.ditherOffsetFrom.empty())
+                throw usage_error("--dither-offset-from needs a file");
         }
         else if (arg == "--accept-damaged-input") opt.acceptDamagedInput = true;
         else if (arg == "--no-waveforms") opt.noWaveforms = true;
@@ -357,6 +372,27 @@ Options parse_args(int argc, char *argv[])
         }
         if (opt.inputs.empty())
             throw usage_error("no inputs", true);
+    }
+    if (!opt.ditherOffsetFrom.empty())
+    {
+        if (opt.ditherOffsetGiven)
+            throw usage_error("--dither-offset and --dither-offset-from exclude each other: give the number, or the"
+                              " official file to find it in");
+        if (opt.watch)
+            throw usage_error("--dither-offset-from does not work with --watch (each run has its own offset)");
+        if (opt.inputs.size() > 1)
+            throw usage_error("--dither-offset-from takes one listfile, not " + std::to_string(opt.inputs.size())
+                              + ": each run has its own dither offset (flirt-convert --find-dither-offset prints"
+                                " several files' offsets)");
+        check_name("--dither-offset-from", opt.ditherOffsetFrom);
+        struct stat fromSt;
+        char fromBuf[PATH_MAX];
+        if (stat(opt.ditherOffsetFrom.c_str(), &fromSt) != 0 || !S_ISREG(fromSt.st_mode)
+            || !realpath(opt.ditherOffsetFrom.c_str(), fromBuf))
+            throw usage_error("--dither-offset-from: no such file: " + opt.ditherOffsetFrom);
+        // As given, made absolute: the run line names it so; the report
+        // and the skip rule use its real path.
+        opt.ditherOffsetFrom = absolute_path(opt.ditherOffsetFrom);
     }
     if (opt.experimentName.empty())
         throw usage_error("--experiment-name must not be empty");
@@ -524,7 +560,26 @@ Mismatch mismatch(const Options &opt, const Run &run)
 
     // The report holds the strings cleaned of invalid UTF-8 (common/utf8.h):
     // compared cleaned to cleaned, and dumped cleaned.
-    if (at("/options/ditherOffset") != json(opt.ditherOffset))
+    // --dither-offset-from: the same official file, unchanged, gives the
+    // same offset; otherwise the offset itself is compared.
+    if (!opt.ditherOffsetFrom.empty())
+    {
+        struct stat fromSt;
+        char fromReal[PATH_MAX];
+        if (stat(opt.ditherOffsetFrom.c_str(), &fromSt) != 0 || !realpath(opt.ditherOffsetFrom.c_str(), fromReal))
+            return differs("cannot stat " + opt.ditherOffsetFrom, "and the official file cannot be read",
+                           "cannot stat " + opt.ditherOffsetFrom);
+        const timespec fromMtime = stat_mtime(fromSt);
+        if (at("/ditherOffsetFrom/path") != json(valid_utf8(fromReal))
+            || at("/ditherOffsetFrom/size") != json(static_cast<int64_t>(fromSt.st_size))
+            || at("/ditherOffsetFrom/mtimeNs") != json(static_cast<int64_t>(fromMtime.tv_sec) * 1000000000 + fromMtime.tv_nsec))
+        {
+            const auto note = "its dither offset was not taken from " + opt.ditherOffsetFrom + " as it is now";
+            return { note, "its files exist and the dither offset differs", "its files exist with another dither offset",
+                     note };
+        }
+    }
+    else if (at("/options/ditherOffset") != json(opt.ditherOffset))
         return setting_differs("ditherOffset differs (report " + dump_valid_utf8(at("/options/ditherOffset")) + ", now "
                                + std::to_string(opt.ditherOffset) + ")",
                                "dither offset", dump_valid_utf8(at("/options/ditherOffset")),
@@ -707,7 +762,10 @@ bool launch(Run &run, const Options &opt, const char *argv0)
                                       "--experiment-title", opt.experimentTitle,
                                       "--threads", std::to_string(opt.threads),
                                       "--progress-fd", "3" };
-    args.insert(args.end(), { "--dither-offset", std::to_string(opt.ditherOffset) });
+    if (opt.ditherOffsetFrom.empty())
+        args.insert(args.end(), { "--dither-offset", std::to_string(opt.ditherOffset) });
+    else
+        args.insert(args.end(), { "--dither-offset-from", opt.ditherOffsetFrom });
     if (opt.noWaveforms)
         args.push_back("--no-waveforms");
     if (opt.defaultFilters)
@@ -1035,7 +1093,8 @@ json options_json(const Options &opt)
              {"analysis", opt.analysisFile.empty() ? json(nullptr) : json(opt.analysisFile)},
              {"analysisSha256", opt.analysisFile.empty() ? json(nullptr) : json(opt.analysisSha256)},
              {"experimentName", opt.experimentName}, {"experimentTitle", opt.experimentTitle},
-             {"ditherOffset", opt.ditherOffset},
+             {"ditherOffset", opt.ditherOffsetFrom.empty() ? json(opt.ditherOffset) : json(nullptr)},
+             {"ditherOffsetFrom", opt.ditherOffsetFrom.empty() ? json(nullptr) : json(opt.ditherOffsetFrom)},
              {"noWaveforms", opt.noWaveforms},
              {"defaultFilters", opt.defaultFilters},
              {"officialWaveformBranches", opt.officialWaveformBranches},

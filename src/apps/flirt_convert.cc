@@ -170,7 +170,7 @@ void usage(const char *argv0)
     std::cerr << "usage: " << argv0 << " <listfile.zip> -o <outdir>"
               << " [--analysis <file.analysis> | --default-filters]"
               << " [--experiment-name <name>] [--experiment-title <title>]"
-              << " [--dither-offset <N>] [--threads <T>] [--no-waveforms]"
+              << " [--dither-offset <N> | --dither-offset-from <official _raw.root>] [--threads <T>] [--no-waveforms]"
               << " [--official-waveform-branches]"
               << " [--accept-damaged-input] [--progress-fd <N>]\n"
               << "\n"
@@ -181,6 +181,9 @@ void usage(const char *argv0)
               << "  --experiment-title  mvme workspace setting Experiment/Title (default: empty)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
               << "                      mvme_root_client --single-run (default: 0)\n"
+              << "  --dither-offset-from\n"
+              << "                      find the dither offset of this run's official _raw.root\n"
+              << "                      and convert with it\n"
               << "  --threads           threads for ROOT compression and waveform decoding;\n"
               << "                      with 1, 2, 4 and 8 compare finds the output IDENTICAL\n"
               << "                      (tested; the bytes on disk can differ)\n"
@@ -577,11 +580,54 @@ bool still_unchanged(const std::string &path, const flirt::FileIdentity &before)
 }
 
 // One listfile: the child of a batch (--convert-one). argv[0] is the program.
+// Why the official file of --dither-offset-from is not this run's: its event
+// trees, their modules and entries against FLIRT's output; empty if it is.
+// A file holding the run twice (official entries twice FLIRT's, the halves
+// alike) passes with a note: its offset is the first copy's.
+std::string not_same_run(const flirt::OfficialRaw &official, const flirt::RootOutputResult &output,
+                         std::vector<std::string> &notes)
+{
+    if (official.trees.size() != output.eventTrees.size())
+        return "it has " + std::to_string(official.trees.size()) + " event trees, this run "
+            + std::to_string(output.eventTrees.size());
+    for (size_t i = 0; i < output.eventTrees.size(); ++i)
+    {
+        const auto &name = output.eventTrees[i].first;
+        const auto &branches = output.eventTrees[i].second;
+        const auto tree = std::find_if(official.trees.begin(), official.trees.end(),
+                                       [&](const flirt::OfficialRaw::Tree &t) { return t.name == name; });
+        if (tree == official.trees.end())
+            return "it has no event tree " + name;
+        auto a = tree->branches, b = branches;
+        std::sort(a.begin(), a.end());
+        std::sort(b.begin(), b.end());
+        if (a != b)
+        {
+            auto list = [](const std::vector<std::string> &v) {
+                std::string s;
+                for (const auto &x: v)
+                    s += (s.empty() ? "" : ", ") + x;
+                return s;
+            };
+            return "its tree " + name + " holds the modules " + list(a) + ", this run " + list(b);
+        }
+        const auto entries = static_cast<int64_t>(output.eventHits.at(i));
+        if (tree->entries == 2 * entries && official.heldTwice && entries > 0)
+            notes.push_back("it holds the run twice (replayed twice into it, " + std::to_string(tree->entries)
+                            + " entries for " + std::to_string(entries) + " events): the first copy's offset is used");
+        else if (tree->entries != entries)
+            return "its tree " + name + " has " + std::to_string(tree->entries) + " entries, this run "
+                + std::to_string(entries);
+    }
+    return {};
+}
+
 int convert_one(int argc, char *argv[])
 {
     install_hangup_handler();
 
-    std::string input, outDir, analysisFile;
+    std::string input, outDir, analysisFile, ditherOffsetFrom;
+    bool ditherOffsetGiven = false;
     bool acceptDamagedInput = false;
     bool noWaveforms = false;
     bool defaultFilters = false;
@@ -604,7 +650,8 @@ int convert_one(int argc, char *argv[])
         else if (arg == "--analysis") analysisFile = value();
         else if (arg == "--experiment-name") runInfo.experimentName = value();
         else if (arg == "--experiment-title") runInfo.experimentTitle = value();
-        else if (arg == "--dither-offset") rootOpts.ditherOffset = std::stoull(value());
+        else if (arg == "--dither-offset") { rootOpts.ditherOffset = std::stoull(value()); ditherOffsetGiven = true; }
+        else if (arg == "--dither-offset-from") ditherOffsetFrom = value();
         else if (arg == "--threads")
         {
             const auto text = value();
@@ -645,6 +692,13 @@ int convert_one(int argc, char *argv[])
     if (defaultFilters && !analysisFile.empty())
     {
         std::cerr << "error: --default-filters and --analysis exclude each other\n";
+        usage(argv[0]);
+        return 2;
+    }
+
+    if (ditherOffsetGiven && !ditherOffsetFrom.empty())
+    {
+        std::cerr << "error: --dither-offset and --dither-offset-from exclude each other\n";
         usage(argv[0]);
         return 2;
     }
@@ -812,6 +866,29 @@ int convert_one(int argc, char *argv[])
         if (access(reportPath.c_str(), F_OK) == 0)
             throw std::runtime_error("output exists, refusing to overwrite: " + reportPath);
 
+        // --dither-offset-from: the offset of this run's official _raw.root,
+        // found by a helper process before anything is written (dither_offset.h).
+        flirt::OfficialRaw official;
+        std::vector<std::string> officialNotes;
+        if (!ditherOffsetFrom.empty())
+        {
+            official = flirt::official_raw_facts(ditherOffsetFrom, listfile.runId);
+            if (official.runInfo && official.runId != listfile.runId)
+            {
+                if (!flirt::live_run_id(official.runId))
+                    throw flirt::unsupported_input("--dither-offset-from: " + ditherOffsetFrom + " is the official file of run "
+                                                   + official.runId + ", not of " + listfile.runId);
+                officialNotes.push_back("its RunID " + official.runId + " is the start time of a run mvme recorded live, "
+                                        "so it is checked by its entries and modules only");
+            }
+            if (!official.problem.empty() && !official.noHits)
+                throw flirt::unsupported_input("--dither-offset-from: no dither offset can be found in "
+                                               + ditherOffsetFrom + ": " + official.problem);
+            if (official.noHits)
+                officialNotes.push_back("it has no hits, so every dither offset gives the same file: 0 is used");
+            rootOpts.ditherOffset = official.found ? official.offset : 0;
+        }
+
         runInfo.runId = listfile.runId;
         runInfo.replaySourceFile = input.substr(input.rfind('/') + 1);
         rootOpts.outDir = outDir;
@@ -933,6 +1010,15 @@ int convert_one(int argc, char *argv[])
         const auto output = writer.sync();
         const auto &rt = writer.timings();
 
+        // --dither-offset-from: the official file must hold this run (its trees,
+        // their modules and entries); refused before anything is published.
+        if (!ditherOffsetFrom.empty())
+        {
+            if (const auto why = not_same_run(official, output, officialNotes); !why.empty())
+                throw flirt::unsupported_input("--dither-offset-from: " + ditherOffsetFrom
+                                               + " is not this run's official file: " + why);
+        }
+
         es::json report;
         // As the batch's build_identity(), which the skip rule compares.
         report["flirt"] = { {"version", FLIRT_GIT_DESCRIBE}, {"mvme", MVME_GIT_DESCRIBE},
@@ -970,6 +1056,8 @@ int convert_one(int argc, char *argv[])
         report["options"] = { {"experimentName", runInfo.experimentName},
                               {"experimentTitle", runInfo.experimentTitle},
                               {"ditherOffset", rootOpts.ditherOffset},
+                              {"ditherOffsetFrom", ditherOffsetFrom.empty() ? es::json(nullptr)
+                                                                            : es::json(real_path(ditherOffsetFrom))},
                               {"acceptDamagedInput", acceptDamagedInput},
                               {"threads", threads}, {"noWaveforms", noWaveforms},
                               {"defaultFilters", defaultFilters},
@@ -1047,6 +1135,16 @@ int convert_one(int argc, char *argv[])
                 {"moduleHeaderMismatches", sc.moduleHeaderMismatches},
                 {"moduleEventSizeExceedsBuffer", sc.moduleEventSizeExceedsBuffer} };
 
+        // Where the dither offset came from.
+        if (!ditherOffsetFrom.empty())
+        {
+            report["ditherOffsetFrom"] = { {"path", real_path(ditherOffsetFrom)}, {"size", official.size},
+                                           {"mtimeNs", official.mtimeNs}, {"runId", official.runId},
+                                           {"entries", official.trees.empty() ? 0 : official.trees[0].entries},
+                                           {"heldTwice", official.heldTwice}, {"noHits", official.noHits},
+                                           {"ditherOffset", rootOpts.ditherOffset}, {"notes", officialNotes} };
+        }
+
         report["omittedSources"] = omitted;
         const bool matchesOfficialLayout = omitted.empty();
         report["matchesOfficialLayout"] = matchesOfficialLayout;
@@ -1105,6 +1203,12 @@ int convert_one(int argc, char *argv[])
                   << reportPath
                   << " (" << pipeline.messagesEmitted << " events, " << totalSeconds << " s)\n";
         std::cerr << flirt::run_summary_line(runFacts.times, runFacts.events) << "\n";
+        if (!ditherOffsetFrom.empty())
+        {
+            std::cerr << "dither offset " << rootOpts.ditherOffset << ", from " << ditherOffsetFrom << "\n";
+            for (const auto &note: officialNotes)
+                std::cerr << "note: --dither-offset-from: " << note << "\n";
+        }
         if (const auto line = flirt::settings_changes_line(runFacts.settings); !line.empty())
             std::cerr << line << "\n";
         if (!skippedModules.empty())

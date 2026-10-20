@@ -222,6 +222,17 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
     else
         row("events", number(facts.events) + (rate.empty() ? "" : " (" + rate + ")"));
 
+    // --dither-offset-from: the offset and the official file it came from.
+    const auto from = at(report, "/ditherOffsetFrom");
+    if (from.is_object())
+    {
+        row("dither", std::to_string(count_at(report, "/options/ditherOffset")) + ", from "
+            + from.value("path", std::string()));
+        for (const auto &n: from.value("notes", json::array()))
+            if (n.is_string())
+                note("--dither-offset-from: " + n.get<std::string>());
+    }
+
     // The files this run wrote, by their endings.
     std::string files = "_raw.root   _histos.root";
     if (at(report, "/output/waveforms").is_string())

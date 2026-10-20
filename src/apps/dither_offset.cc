@@ -474,7 +474,8 @@ void find_usage(const char *argv0)
     std::cerr << "usage: " << argv0 << " --find-dither-offset <official _raw.root>...\n"
               << "\n"
               << "Prints the dither offset of each _raw.root that mvme_root_client wrote, one\n"
-              << "line per file, and converts nothing. Convert with it: --dither-offset <N>\n"
+              << "line per file, and converts nothing. Convert with it: --dither-offset <N>, or\n"
+              << "--dither-offset-from <official _raw.root> to find and use it in one step\n"
               << "(README, \"Dither offset\"). Searches the first 4,294,967,296 draws.\n"
               << "--json-events: events on stdout instead, for programs (README, \"Events for programs\").\n"
               << "Exit codes: 0 every offset found, 1 not every one, 2 usage.\n";
@@ -542,7 +543,8 @@ int run_find_dither_offset(int argc, char *argv[])
         else if (!arg.empty() && arg[0] == '-')
             error = "--find-dither-offset takes only official _raw.root files, not " + arg;
         else if (is_listfile_input(arg))
-            error = printable(arg) + " is a listfile or a folder: --find-dither-offset reads official _raw.root files";
+            error = printable(arg) + " is a listfile or a folder: --find-dither-offset reads official _raw.root files "
+                    "(to convert with the offset of one: <listfile.zip> -o <dir> --dither-offset-from <_raw.root>)";
         else if (const auto refusal = name_refusal(own_name(arg)); !refusal.empty())
             error = "--find-dither-offset " + refusal;
         if (!error.empty())
