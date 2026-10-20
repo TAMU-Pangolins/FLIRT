@@ -61,7 +61,7 @@ void usage(const char *argv0)
     std::cerr << "usage: " << argv0 << " <input>... -o <outdir> [-j N] [--list <file>]"
               << " [--summary <file.json>]"
               << " [--dither-offset <N>]"
-              << " [--accept-damaged-input]\n"
+              << " [--accept-damaged-input] [--json-events]\n"
               << "\n"
               << "Converts mvme MVLC listfile archives into <runId>_raw.root, <runId>_histos.root\n"
               << "and a report <runId>.flirt.json in <outdir>. Tested against mvme_root_client\n"
@@ -83,6 +83,8 @@ void usage(const char *argv0)
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
+              << "  --json-events       stdout: one JSON event per line for programs, instead of\n"
+              << "                      the summary lines\n"
               << "\n"
               << "Exit codes: 0 all converted, 1 a conversion failed or the --summary file could\n"
               << "not be written, 2 usage, 3 unsupported input, 130 interrupted.\n";
@@ -96,6 +98,7 @@ struct Options
     std::string summaryPath;
     uint64_t ditherOffset = 0;
     bool acceptDamagedInput = false;
+    bool jsonEvents = false;    // --json-events: stdout carries JSON events only
 };
 
 struct Run
@@ -108,6 +111,7 @@ struct Run
     pid_t pid = 0;
     FILE *log = nullptr;    // the child's stdout and stderr
     Clock::time_point start;
+    bool convert = false;   // this batch converts it (not skipped or refused)
     bool diskFull = false;  // the child said "No space left on device"
 };
 
@@ -206,6 +210,7 @@ Options parse_args(int argc, char *argv[])
             opt.ditherOffset = parse_number(arg, value());
         }
         else if (arg == "--accept-damaged-input") opt.acceptDamagedInput = true;
+        else if (arg == "--json-events") opt.jsonEvents = true;
         else if (!arg.empty() && arg[0] == '-') throw usage_error("unknown option " + arg, true);
         else sources.emplace_back(false, arg);
     }
@@ -380,7 +385,8 @@ std::string read_log(FILE *log)
     return text;
 }
 
-// A line of the batch's text, on stderr.
+// A line flirt-convert prints on stderr, and with --json-events sends as a
+// message event (README "Events for programs").
 using Say = std::function<void(const std::string &)>;
 
 // A child has exited: pass its output on as messages, prefixed with the run
@@ -515,7 +521,7 @@ void say_result(const Run &run, const Say &say)
         say(run.runId + ": to do: " + f.todo);
 }
 
-// The summary's "options".
+// The summary's "options" (also the --json-events start event's).
 json options_json(const Options &opt)
 {
     return { {"outputDir", opt.outDir}, {"jobs", opt.jobs},
@@ -523,7 +529,7 @@ json options_json(const Options &opt)
              {"acceptDamagedInput", opt.acceptDamagedInput} };
 }
 
-// A run in the summary's "results".
+// A run in the summary's "results" (also a --json-events result event).
 json result_json(const Options &opt, const Run &run)
 {
     const auto report = report_path(opt, run);
@@ -575,6 +581,28 @@ bool write_summary(const Options &opt, const json &summary, const Say &tell)
     return ok;
 }
 
+// flirt-convert --json-events (README "Events for programs"): one compact
+// JSON object per line on stdout, written and flushed when it happens, with
+// invalid UTF-8 replaced (common/utf8.h).
+class Events
+{
+    public:
+        explicit Events(bool on): on_(on) { }
+        bool on() const { return on_; }
+
+        void send(const std::string &event, const json &fields = json::object())
+        {
+            if (!on_)
+                return;
+            json object = fields;
+            object["event"] = event;
+            std::cout << dump_valid_utf8(object) << "\n" << std::flush;
+        }
+
+    private:
+        bool on_;
+};
+
 }
 
 int run_batch(int argc, char *argv[])
@@ -614,6 +642,8 @@ int run_batch(int argc, char *argv[])
     Options opt;
     // A deque: `running` and `queue` point into it while runs are added.
     std::deque<Run> runs;
+    // Also for a usage error, so it is known before the arguments are checked.
+    Events events(std::any_of(argv + 1, argv + argc, [](const char *a) { return std::string(a) == "--json-events"; }));
 
     try
     {
@@ -649,11 +679,27 @@ int run_batch(int argc, char *argv[])
         std::cerr << "error: " << e.what() << "\n";
         if (e.showUsage)
             usage(argv[0]);
+        events.send("usage-error", { {"message", valid_utf8(e.what())} });
         return 2;
     }
+    events.send("start", { {"flirt", build_identity()}, {"options", options_json(opt)} });
 
-    // From here on the text goes to stderr, a line at a time.
-    const Say say = [](const std::string &text) { std::cerr << text << "\n"; };
+    // From here on the text goes to stderr, a line at a time, and with
+    // --json-events each line is also a message event: a line about one run
+    // ("<runId>: ...") carries its run ID and the text after that prefix.
+    const Say say = [&](const std::string &text)
+    {
+        std::cerr << text << "\n";
+        if (!events.on())
+            return;
+        const Run *about = nullptr;
+        for (const auto &run: runs)
+            if (text.size() > run.runId.size() + 1 && text.compare(0, run.runId.size() + 2, run.runId + ": ") == 0
+                && (!about || run.runId.size() > about->runId.size()))
+                about = &run;
+        events.send("message", { {"runId", about ? json(about->runId) : json(nullptr)},
+                                 {"text", valid_utf8(about ? text.substr(about->runId.size() + 2) : text)} });
+    };
     const Say &tell = say;
 
     // True if the run is to be converted.
@@ -672,6 +718,7 @@ int run_batch(int argc, char *argv[])
             return false;
         }
 
+        run.convert = true;
         return true;
     };
 
@@ -680,6 +727,19 @@ int run_batch(int argc, char *argv[])
     for (auto &run: runs)
         if (classify(run))
             queue.push_back(&run);
+
+    // The plan, then the results of the runs not converted.
+    if (events.on())
+    {
+        json plan = json::array();
+        for (const auto &run: runs)
+            plan.push_back({ {"runId", run.runId}, {"input", run.input},
+                             {"action", run.convert ? "convert" : run.result} });
+        events.send("plan", { {"runs", plan} });
+        for (const auto &run: runs)
+            if (!run.convert)
+                events.send("result", result_json(opt, run));
+    }
 
     // At most opt.jobs children at a time.
     bool stopping = false;
@@ -720,6 +780,7 @@ int run_batch(int argc, char *argv[])
                 auto &run = **it;
                 finish(run, status, stopping, opt, say);
                 say_result(run, say);
+                events.send("result", result_json(opt, run));
                 it = running.erase(it);
             }
             else
@@ -741,6 +802,7 @@ int run_batch(int argc, char *argv[])
                 run.result = "failed";
                 say(run.runId + ": failed: " + reason_text(failure_of(run)));
                 say(run.runId + ": to do: " + failure_of(run).todo);
+                events.send("result", result_json(opt, run));
             }
         }
 
@@ -756,6 +818,7 @@ int run_batch(int argc, char *argv[])
         if (run.result.empty())
         {
             run.result = "not-started";
+            events.send("result", result_json(opt, run));
         }
 
     std::map<std::string, size_t> totals;
@@ -778,6 +841,9 @@ int run_batch(int argc, char *argv[])
     if (!opt.summaryPath.empty() && !write_summary(opt, summary, tell) && exitCode == 0)
         exitCode = 1;
 
+    // The exit code differs from the summary's only if it could not be written.
+    summary["exitCode"] = exitCode;
+    events.send("end", { {"summary", summary} });
     return exitCode;
 }
 
