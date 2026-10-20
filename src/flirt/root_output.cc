@@ -275,6 +275,12 @@ struct RootWriter::Private: public es::Client
     std::unique_ptr<TFile> histoOutFile;
     MakeRawHistosResult rawHistos;
 
+    // Stream description without the omitted data sources, and for every
+    // transmitted data source its storage index in the generated event
+    // class, or -1 when omitted.
+    es::StreamInfo storedStreamInfo;
+    std::vector<std::vector<int>> storageIndexes;
+
     std::string tmpDir;                     // private directory inside outDir
     std::string tmpBase;                    // the run ID it was made for
     std::vector<std::string> tmpFiles;      // names created inside tmpDir (root_safe_name())
@@ -292,6 +298,7 @@ struct RootWriter::Private: public es::Client
     void error(const es::Message &, const std::exception &) override {}
 
     void loadExperimentClasses(const es::StreamInfo &streamInfo);
+    void selectStoredDataSources(const es::StreamInfo &streamInfo);
     void makeTmpDir(const std::string &base);
     void cleanup();
 };
@@ -313,6 +320,40 @@ void RootWriter::Private::makeTmpDir(const std::string &base)
         throw std::runtime_error("mkdtemp " + tmpl + ": " + std::strerror(errno));
     tmpDir = tmplBuf.data();
     tmpBase = base;
+}
+
+void RootWriter::Private::selectStoredDataSources(const es::StreamInfo &streamInfo)
+{
+    storedStreamInfo = streamInfo;
+    storageIndexes.clear();
+
+    for (size_t ei = 0; ei < streamInfo.eventDataDescriptions.size(); ++ei)
+    {
+        const auto &sources = streamInfo.eventDataDescriptions[ei].dataSources;
+        const auto omit = ei < opts.omitDataSources.size() ? opts.omitDataSources[ei]
+                                                            : std::vector<size_t>{};
+        auto &stored = storedStreamInfo.eventDataDescriptions[ei].dataSources;
+        stored.clear();
+        std::vector<int> indexes;
+
+        for (size_t dsIndex = 0; dsIndex < sources.size(); ++dsIndex)
+        {
+            if (std::find(omit.begin(), omit.end(), dsIndex) != omit.end())
+                indexes.push_back(-1);
+            else
+            {
+                indexes.push_back(static_cast<int>(stored.size()));
+                stored.push_back(sources[dsIndex]);
+            }
+        }
+
+        for (auto dsIndex: omit)
+            if (dsIndex >= sources.size())
+                throw std::runtime_error("data source to omit out of range: event "
+                                         + std::to_string(ei) + ", index " + std::to_string(dsIndex));
+
+        storageIndexes.push_back(indexes);
+    }
 }
 
 // :577-929
@@ -339,19 +380,20 @@ void RootWriter::Private::beginRun(const es::Message &, const es::StreamInfo &st
 
     makeTmpDir(base);
 
-    loadExperimentClasses(streamInfo);
+    selectStoredDataSources(streamInfo);
+    loadExperimentClasses(storedStreamInfo);
 
     if (!exp)
         throw std::runtime_error("error creating an instance of the experiment class '"
                                  + expStructName + "'"); // :739-746
 
     // :748-776
-    if (streamInfo.eventDataDescriptions.size() != exp->GetNumberOfEvents())
+    if (storedStreamInfo.eventDataDescriptions.size() != exp->GetNumberOfEvents())
         throw std::runtime_error("StreamInfo and generated Experiment disagree on the event count");
 
     for (size_t eventIndex = 0; eventIndex < exp->GetNumberOfEvents(); eventIndex++)
     {
-        auto &edd = streamInfo.eventDataDescriptions.at(eventIndex);
+        auto &edd = storedStreamInfo.eventDataDescriptions.at(eventIndex);
         if (edd.dataSources.size() != exp->GetEvent(eventIndex)->GetDataSourceStorages().size())
             throw std::runtime_error("StreamInfo and generated Event class disagree on data sources");
     }
@@ -474,13 +516,20 @@ void RootWriter::Private::eventData(const es::Message &, int eventIndex,
     {
         const es::DataSourceContents &dsc = contents.at(dsIndex);
         const uint8_t *dscEnd = es::get_end_pointer(dsc);
+        const int storageIndex = storageIndexes.at(eventIndex).at(dsIndex);
 
-        auto userStorage = event->GetDataSourceStorage(dsIndex);
-        assert(userStorage.ptr);
-        assert(userStorage.size == edd.dataSources.at(dsIndex).size);
-        (void) edd;
-
-        std::fill(userStorage.ptr, userStorage.ptr + userStorage.size, make_quiet_nan());
+        // Omitted data source: its values take their draws (:1017-1021) and
+        // are dropped. userStorage.size would have been the described size.
+        Storage userStorage = {};
+        if (storageIndex >= 0)
+        {
+            userStorage = event->GetDataSourceStorage(storageIndex);
+            assert(userStorage.ptr);
+            assert(userStorage.size == edd.dataSources.at(dsIndex).size);
+            std::fill(userStorage.ptr, userStorage.ptr + userStorage.size, make_quiet_nan());
+        }
+        else
+            userStorage.size = edd.dataSources.at(dsIndex).size;
 
         const size_t entrySize = es::get_entry_size(dsc);
         const size_t indexSize = es::get_storage_type_size(dsc.indexType);

@@ -161,6 +161,7 @@ void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <listfile.zip> -o <outdir>"
               << " [--dither-offset <N>] [--threads <T>]"
+              << " [--official-waveform-branches]"
               << " [--accept-damaged-input] [--progress-fd <N>]\n"
               << "\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
@@ -169,6 +170,9 @@ void usage(const char *argv0)
               << "                      with 1, 2, 4 and 8 compare finds the output IDENTICAL\n"
               << "                      (tested; the bytes on disk can differ)\n"
               << "                      (default: 1)\n"
+              << "  --official-waveform-branches\n"
+              << "                      write the analysis's waveform sources into _raw.root and\n"
+              << "                      _histos.root as mvme does (channel 0, 8 bits)\n"
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
@@ -502,6 +506,7 @@ int convert_one(int argc, char *argv[])
 
     std::string input, outDir;
     bool acceptDamagedInput = false;
+    bool officialWaveformBranches = false;
     bool published = false;
     unsigned threads = 1;
     int progressFd = -1;
@@ -540,6 +545,7 @@ int convert_one(int argc, char *argv[])
             progressFd = std::stoi(text);
         }
         else if (arg == "--accept-damaged-input") acceptDamagedInput = true;
+        else if (arg == "--official-waveform-branches") officialWaveformBranches = true;
         else if (arg == "-h" || arg == "--help") { usage(argv[0]); return 0; }
         else if (!arg.empty() && arg[0] == '-') { usage(argv[0]); return 2; }
         else if (input.empty()) input = arg;
@@ -626,6 +632,24 @@ int convert_one(int argc, char *argv[])
         // the analysis's decoders (docs/design.md, "Waveforms with any analysis").
         analysis.waveformModules = flirt::waveform_tree_modules(vmeConfig, analysis, samplingSettings);
         const bool hasWaveformSources = flirt::has_waveform_sources(analysis);
+
+        // Waveform sources are left out of the ROOT output unless
+        // --official-waveform-branches (docs/design.md, "Waveform sources left out").
+        es::json omitted = es::json::array();
+        for (const auto &sources: analysis.dataSources)
+        {
+            rootOpts.omitDataSources.emplace_back();
+            for (size_t dsIndex = 0; !officialWaveformBranches && dsIndex < sources.size(); ++dsIndex)
+            {
+                const auto &src = sources[dsIndex];
+                if (src.kind != flirt::DataSourceConfig::Kind::MdppSampleDecoder)
+                    continue;
+                rootOpts.omitDataSources.back().push_back(dsIndex);
+                omitted.push_back({ {"class", src.className.toStdString()}, {"name", src.name.toStdString()},
+                                    {"eventIndex", src.eventIndex}, {"dataSourceIndex", dsIndex},
+                                    {"moduleIndex", src.moduleIndex} });
+            }
+        }
 
         // All MDPP sample traces go to <runId>_waveforms.root, one tree per
         // module of analysis.waveformModules (waveform_output.h). Traces are
@@ -798,7 +822,8 @@ int convert_one(int argc, char *argv[])
                                {"version", analysis.version} };
         report["options"] = { {"ditherOffset", rootOpts.ditherOffset},
                               {"acceptDamagedInput", acceptDamagedInput},
-                              {"threads", threads} };
+                              {"threads", threads},
+                              {"officialWaveformBranches", officialWaveformBranches} };
         report["output"] = { {"raw", output.rawFile}, {"histos", output.histosFile},
                              {"rawBytes", static_cast<int64_t>(output.rawBytes)},
                              {"histosBytes", static_cast<int64_t>(output.histosBytes)},
@@ -868,6 +893,23 @@ int convert_one(int argc, char *argv[])
                 {"moduleHeaderMismatches", sc.moduleHeaderMismatches},
                 {"moduleEventSizeExceedsBuffer", sc.moduleEventSizeExceedsBuffer} };
 
+        report["omittedSources"] = omitted;
+        const bool matchesOfficialLayout = omitted.empty();
+        report["matchesOfficialLayout"] = matchesOfficialLayout;
+        // Where the waveforms are, for the note and the report's note.
+        const std::string waveformsAre = !waveforms
+            ? "no module records samples FLIRT can decode, so there is no waveforms file"
+            : "all waveforms are in " + waveformsFile;
+        if (!matchesOfficialLayout)
+            report["note"] = "The analysis's " + std::to_string(omitted.size()) + " waveform (MDPP sample "
+                             "decoder) source(s) are not written to _raw.root and _histos.root (official "
+                             "mvme writes only their channel 0, cut to 8 bits). Their values still took "
+                             "their random draws, so every other value is stored exactly as "
+                             "mvme_root_client stores it, but the files lack the waveform branches, "
+                             "class members and histograms, and ROOT's basket layout differs as a "
+                             "result; " + waveformsAre + "; --official-waveform-branches writes them "
+                             "as mvme does.";
+
         // Seconds per stage. Waveform decoding is part of replayParseExtract;
         // inputHashing runs alongside the other stages.
         const double totalSeconds = seconds_since(t0);
@@ -909,6 +951,11 @@ int convert_one(int argc, char *argv[])
                   << " (" << pipeline.messagesEmitted << " events, " << totalSeconds << " s)\n";
         for (const auto &line: waveformConfig.messages)
             std::cerr << line << "\n";
+        if (!matchesOfficialLayout)
+            std::cerr << "note: the analysis's " << omitted.size() << " waveform source(s) are not written"
+                      << " to _raw.root and _histos.root (official mvme writes only their channel 0, cut to"
+                      << " 8 bits); every other value is as official; " << waveformsAre
+                      << "; --official-waveform-branches writes them as mvme does\n";
         if (failed)
         {
             std::cerr << "warning: published despite failed checks (--accept-damaged-input):\n";

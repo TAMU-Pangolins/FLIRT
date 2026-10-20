@@ -27,6 +27,11 @@ struct RootOutputOptions
     // ROOT::EnableThreadSafety() before any other ROOT use, for another thread
     // writing its own ROOT file (the waveform writer).
     bool threadSafety = false;
+    // Per event index: transmitted data-source indices whose values are not
+    // written. They get no class member, branch or histogram, but each of
+    // their values still takes its dither draw, so every other value is
+    // stored exactly as mvme_root_client stores it.
+    std::vector<std::vector<size_t>> omitDataSources;
 };
 
 struct RootOutputResult
@@ -96,6 +101,7 @@ class RootWriter
 
 // The experiment classes the client generates (user_objects*.mustache) for a
 // stream description. FLIRT only uses them in memory; exposed for tests.
+// Data sources to omit must already be removed from the description.
 struct ExperimentCode
 {
     std::string structName;         // ExperimentName

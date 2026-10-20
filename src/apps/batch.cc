@@ -29,6 +29,7 @@
 #include <sstream>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <tuple>
 #include <unistd.h>
 
 #include "batch.h"
@@ -66,7 +67,7 @@ void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <input>... -o <outdir> [-j N] [--list <file>]"
               << " [--summary <file.json>]"
-              << " [--dither-offset <N>] [--threads <T>]"
+              << " [--dither-offset <N>] [--threads <T>] [--official-waveform-branches]"
               << " [--accept-damaged-input] [--json-events]\n"
               << "\n"
               << "Converts mvme MVLC listfile archives into <runId>_raw.root, <runId>_histos.root,\n"
@@ -93,6 +94,9 @@ void usage(const char *argv0)
               << "                      decoding; with 1, 2, 4 and 8 threads compare finds the\n"
               << "                      outputs IDENTICAL (tested; the bytes on disk can differ)\n"
               << "                      (default: 1)\n"
+              << "  --official-waveform-branches\n"
+              << "                      write the analysis's waveform sources into _raw.root and\n"
+              << "                      _histos.root as mvme does (channel 0, 8 bits)\n"
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
@@ -112,6 +116,7 @@ struct Options
     unsigned threads = 1;   // per child; informational, not part of the skip rule
     std::string summaryPath;
     uint64_t ditherOffset = 0;
+    bool officialWaveformBranches = false;
     bool acceptDamagedInput = false;
     bool jsonEvents = false;    // --json-events: stdout carries JSON events only
 };
@@ -258,6 +263,7 @@ Options parse_args(int argc, char *argv[])
             opt.ditherOffset = parse_number(arg, value());
         }
         else if (arg == "--accept-damaged-input") opt.acceptDamagedInput = true;
+        else if (arg == "--official-waveform-branches") opt.officialWaveformBranches = true;
         else if (arg == "--json-events") opt.jsonEvents = true;
         else if (!arg.empty() && arg[0] == '-') throw usage_error("unknown option " + arg, true);
         else sources.emplace_back(false, arg);
@@ -405,6 +411,18 @@ Mismatch mismatch(const Options &opt, const Run &run)
                                + std::to_string(opt.ditherOffset) + ")",
                                "dither offset", dump_valid_utf8(at("/options/ditherOffset")),
                                std::to_string(opt.ditherOffset));
+
+    // The option, and what the block calls it.
+    const std::tuple<const char *, json, const char *> options[] = {
+        { "officialWaveformBranches", opt.officialWaveformBranches, "--official-waveform-branches setting" } };
+    for (const auto &[name, value, noun]: options)
+    {
+        const auto recorded = at(("/options/" + std::string(name)).c_str());
+        if (recorded != value)
+            return setting_differs(std::string(name) + " differs (report " + dump_valid_utf8(recorded) + ", now "
+                                   + dump_valid_utf8(value) + ")",
+                                   noun, dump_valid_utf8(recorded), dump_valid_utf8(value));
+    }
 
     // The files against the report: the note names their paths, the block
     // their names (the folder is said once).
@@ -567,6 +585,8 @@ bool launch(Run &run, const Options &opt, const char *argv0)
                                       "--threads", std::to_string(opt.threads),
                                       "--progress-fd", "3" };
     args.insert(args.end(), { "--dither-offset", std::to_string(opt.ditherOffset) });
+    if (opt.officialWaveformBranches)
+        args.push_back("--official-waveform-branches");
     if (opt.acceptDamagedInput)
         args.push_back("--accept-damaged-input");
 
@@ -884,6 +904,7 @@ json options_json(const Options &opt)
 {
     return { {"outputDir", opt.outDir}, {"jobs", opt.jobs}, {"threads", opt.threads},
              {"ditherOffset", opt.ditherOffset},
+             {"officialWaveformBranches", opt.officialWaveformBranches},
              {"acceptDamagedInput", opt.acceptDamagedInput} };
 }
 

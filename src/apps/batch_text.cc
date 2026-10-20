@@ -186,6 +186,21 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
         else if (result == "note")
             note(text);
     }
+    // The analysis's waveform sources left out (the report's "note" says it
+    // at length); its own waveforms file is not named by its path.
+    const auto omitted = at(report, "/omittedSources");
+    if (at(report, "/matchesOfficialLayout") == false && omitted.is_array())
+    {
+        const auto start = "the analysis's " + counted(omitted.size(), "waveform source is", "waveform sources are")
+            + " not in _raw.root and _histos.root (official mvme keeps only their channel 0, cut to 8 bits);"
+              " every other value is as official. ";
+        const auto end = "; --official-waveform-branches writes them as mvme does.";
+        if (at(report, "/output/waveforms").is_string())
+            note(start + "The full traces are in the run's _waveforms.root" + end,
+                 start + "The full traces are in each _waveforms.root" + end);
+        else
+            note(start + "No module records samples FLIRT can decode, so there is no waveforms file" + end);
+    }
     // --accept-damaged-input: each failed check in plain words (common/failures.h).
     const auto checks = at(report, "/checks");
     if (checks.is_object())
