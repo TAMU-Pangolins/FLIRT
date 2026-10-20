@@ -78,6 +78,7 @@ void usage(const char *argv0)
               << " [--accept-damaged-input] [--json-events]\n"
               << "       " << argv0 << " --watch <dir> -o <outdir> [--settle <S>] [-j N] [--summary <file.json>]"
               << " [the conversion options above]\n"
+              << "       " << argv0 << " --find-dither-offset <official _raw.root>...\n"
               << "\n"
               << "Converts mvme MVLC listfile archives into <runId>_raw.root, <runId>_histos.root,\n"
               << "<runId>_waveforms.root (if a module records MDPP samples) and a\n"
@@ -104,6 +105,9 @@ void usage(const char *argv0)
               << "  --experiment-title  mvme workspace setting Experiment/Title (default: empty)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
               << "                      mvme_root_client --single-run (default: 0)\n"
+              << "  --find-dither-offset <official _raw.root>...\n"
+              << "                      instead of converting: print each file's dither offset\n"
+              << "                      (README, \"Dither offset\"; about a minute at most)\n"
               << "  --threads T         threads per conversion for ROOT compression and waveform\n"
               << "                      decoding; with 1, 2, 4 and 8 threads compare finds the\n"
               << "                      outputs IDENTICAL (tested; the bytes on disk can differ)\n"
@@ -416,6 +420,7 @@ json build_identity()
     return { {"version", FLIRT_GIT_DESCRIBE}, {"mvme", MVME_GIT_DESCRIBE}, {"root", ROOT_RELEASE},
              {"platform", build_platform()}, {"executableSha256", executable_sha256()} };
 }
+
 // A development build: every dirty tree of a commit, and every build without
 // git, gives the same describe string.
 bool development_build()
@@ -612,7 +617,6 @@ const std::string &executable_sha256()
 
 namespace
 {
-
 
 std::string signal_name(int sig)
 {

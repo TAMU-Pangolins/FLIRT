@@ -57,6 +57,7 @@
 #include "flirt/waveform_output.h"
 #include "flirt_version.h"
 #include "batch.h"
+#include "dither_offset.h"
 
 namespace es = mvme::event_server;
 namespace parser = mesytec::mvlc::readout_parser;
@@ -1160,6 +1161,10 @@ int convert_one(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+    // A mode like --watch: wherever it stands among the arguments.
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--find-dither-offset")
+            return flirt::run_find_dither_offset(argc, argv);
     if (argc > 1 && std::string(argv[1]) == "--convert-one")
     {
         std::vector<char *> args{ argv[0] };
