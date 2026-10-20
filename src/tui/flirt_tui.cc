@@ -13,6 +13,14 @@
 // request; it stops when the tab shows no file (box 1 back on Listfiles) and at
 // exit. The play is stepped by a ticker thread that posts ticks through the
 // same gate.
+//
+// The details' run information comes from <its own directory>/flirt-info --json
+// (flirt::InfoReader), one listfile per run. Every row is read ahead, the
+// cursor's row first (InfoQueue), each read in its own thread, at most the
+// limit at once (src/common/cores.h: how busy the cores are, measured by a
+// dispatcher thread) plus the cursor's row. At exit the dispatcher ends, every
+// reader is stopped (its running flirt-info killed and reaped) and every thread
+// joined before the program ends: no flirt-info outlives flirt-tui.
 
 #include <atomic>
 #include <chrono>
@@ -27,6 +35,8 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/screen/terminal.hpp>
 #include <iostream>
+#include <list>
+#include <memory>
 #include <mutex>
 #include <pwd.h>
 #include <sys/stat.h>
@@ -35,14 +45,17 @@
 #include <utility>
 #include <vector>
 
+#include "common/cores.h"
 #include "common/names.h"
 #include "common/platform.h"
 #include "flirt_version.h"
+#include "info_queue.h"
 #include "input.h"
 #include "model.h"
 #include "settings.h"
 #include "text.h"
 #include "ui/files.h"
+#include "ui/info.h"
 #include "ui/job.h"
 #include "ui/start_args.h"
 #include "ui/waveforms.h"
@@ -405,8 +418,123 @@ int main(int argc, char *argv[])
         waveQuit = false;
     };
 
+    // The run information of every row (docs/design.md, "Reading several
+    // listfiles at once"): InfoQueue picks the next read, each read runs in its
+    // own thread with its own InfoReader (one flirt-info). The cursor's row
+    // starts at once (from the loop's thread); the read-ahead is started by
+    // infoDispatcher, off the loop's thread since measuring how busy the cores
+    // are may sleep (CpuMeter), up to the limit asked again before each start.
+    // Each answer is cached in the model when it comes. A row taken off the
+    // list is dropped, its running read stopped.
+    struct InfoRead
+    {
+        std::string path;
+        std::shared_ptr<flirt::InfoReader> reader;
+        std::thread thread;
+        bool dropped = false, done = false;
+    };
+    std::mutex infoMutex;
+    std::condition_variable infoCv;
+    InfoQueue infoQueue;
+    std::list<InfoRead> infoReads;
+    bool infoQuit = false, infoWake = false;
+    const std::string infoExe = convertExe.substr(0, convertExe.rfind('/')) + "/flirt-info";
+    // Under infoMutex: one read started.
+    auto infoStart = [&](const std::string &path) {
+        infoReads.emplace_back();
+        auto *read = &infoReads.back();
+        read->path = path;
+        read->reader = std::make_shared<flirt::InfoReader>(infoExe);
+        read->thread = std::thread([&, read, path] {
+            // The file as flirt-info reads it, for the cache.
+            struct stat st;
+            const bool known = stat(path.c_str(), &st) == 0;
+            const int64_t size = known ? static_cast<int64_t>(st.st_size) : -1;
+            const timespec mtime = known ? flirt::stat_mtime(st) : timespec{};
+            auto answer = read->reader->read(path);
+            bool dropped;
+            {
+                std::lock_guard<std::mutex> lock(infoMutex);
+                dropped = read->dropped;
+                if (!dropped)
+                    infoQueue.finished(path);
+                read->done = true;
+                infoWake = true;
+            }
+            infoCv.notify_all();
+            if (!dropped)
+                post([&, path, size, mtime, answer] { apply_info_answer(model, path, size, mtime, answer); });
+        });
+    };
+    std::thread infoDispatcher([&] {
+        // A fresh 150 ms sample when the last is over 3 s old, else from it to now.
+        flirt::CpuMeter meter(std::chrono::milliseconds(150), std::chrono::seconds(3));
+        const int most = std::max(1, flirt::usable_cores() / 2);
+        std::unique_lock<std::mutex> lock(infoMutex);
+        for (;;)
+        {
+            infoCv.wait(lock, [&] { return infoQuit || infoWake; });
+            if (infoQuit)
+                return;     // the exit joins the reads
+            infoWake = false;
+            for (auto it = infoReads.begin(); it != infoReads.end();)
+                if (it->done)
+                {
+                    it->thread.join();
+                    it = infoReads.erase(it);
+                }
+                else
+                    ++it;
+            for (auto path = infoQueue.next_cursor(); !path.empty(); path = infoQueue.next_cursor())
+                infoStart(path);
+            if (!infoQueue.can_read_ahead(most))
+                continue;
+            const int own = static_cast<int>(infoQueue.running());
+            lock.unlock();
+            const int limit = meter.read_limit_now(own);
+            lock.lock();
+            if (infoQuit)
+                return;
+            for (auto path = infoQueue.next(limit); !path.empty(); path = infoQueue.next(limit))
+                infoStart(path);
+        }
+    });
+    // In the loop's thread.
+    actions.info = [&](const InfoRequests &requests) {
+        std::vector<std::shared_ptr<flirt::InfoReader>> stop;
+        {
+            std::lock_guard<std::mutex> lock(infoMutex);
+            for (const auto &path: infoQueue.apply(requests))
+                for (auto &read: infoReads)
+                    if (read.path == path && !read.done && !read.dropped)
+                    {
+                        read.dropped = true;
+                        stop.push_back(read.reader);
+                    }
+            for (auto path = infoQueue.next_cursor(); !path.empty(); path = infoQueue.next_cursor())
+                infoStart(path);
+            infoWake = true;
+        }
+        infoCv.notify_all();
+        // Outside the mutex: stop() waits until the read has reaped its flirt-info.
+        for (const auto &reader: stop)
+            reader->stop();
+    };
+
+    bool refreshed = false;
     auto view = ftxui::Renderer([&] {
         const auto size = ftxui::Terminal::Size();
+        // The first row's details (its run information) before the first
+        // key: asked for at the first draw, in the loop's thread, since a
+        // task posted before the loop runs is dropped (FTXUI 6.1.9
+        // ScreenInteractive::Post), and flirt-info may answer at once.
+        if (!refreshed)
+        {
+            refreshed = true;
+            actions.width = size.dimx;
+            actions.height = size.dimy;
+            refresh(model, actions);
+        }
         // FTXUI's TrackMouse turns on modes 1000, 1003, 1015 and 1006; with
         // 1003 every mouse move is an event and a full redraw, heavy over ssh.
         // In xterm-like terminals the tracking mode is one setting, so 1002
@@ -501,6 +629,19 @@ int main(int argc, char *argv[])
         gateClosed = true;
     }
     actions.closeWaveforms();
+    // No flirt-info outlives flirt-tui: no read starts any more, every
+    // running one is killed and reaped, and every read's thread joined.
+    {
+        std::lock_guard<std::mutex> lock(infoMutex);
+        infoQuit = true;
+    }
+    infoCv.notify_all();
+    infoDispatcher.join();
+    // No read is added or erased any more: the list is stable here.
+    for (auto &read: infoReads)
+        read.reader->stop();
+    for (auto &read: infoReads)
+        read.thread.join();
     const auto atExit = jobs.state(0, std::chrono::milliseconds(0));
     if (atExit["job"].is_object() && atExit["job"].value("state", "") != "finished")
         std::cerr << "flirt-tui: stopping the running conversion...\n" << std::flush;

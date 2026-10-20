@@ -300,12 +300,14 @@ void follow_runs(Model &m)
 }
 
 // The details follow box 1's row while they are shown (Listfiles, box 1
-// chosen, the Details tab).
+// chosen, the Details tab): its run information is asked for when it is
+// shown (request_info then asks only if the cache has nothing for it).
 void follow_details(Model &m)
 {
     const auto *f = !m.wavesTab && m.chosen == 1 && !m.logTab ? selected_file(m) : nullptr;
     if (!f)
     {
+        m.infoShown.clear();
         return;
     }
     if (f->path != m.detailPath)
@@ -313,6 +315,11 @@ void follow_details(Model &m)
         m.detailPath = f->path;
         m.detailScroll = 0;
         m.reportShown = false;
+    }
+    if (m.infoShown != f->path)
+    {
+        m.infoShown = f->path;
+        request_info(m, f->path);
     }
 }
 
@@ -457,7 +464,9 @@ void refresh(Model &m, Actions &a)
     if (!m.waves.open)
         m.fullPlot = m.dragging = false;
     follow_details(m);
+    plan_info(m);
     send_waveform_request(m, a);
+    send_info_requests(m, a);
 }
 
 void send_waveform_request(Model &m, Actions &a)
@@ -468,6 +477,27 @@ void send_waveform_request(Model &m, Actions &a)
     request.swap(m.waves.outbox);
     if (m.waves.open && a.waveforms)
         a.waveforms(request);
+}
+
+void send_info_requests(Model &m, Actions &a)
+{
+    InfoRequests r;
+    r.want.swap(m.infoOutbox);
+    r.drop.swap(m.infoDrops);
+    const auto *f = selected_file(m);
+    r.busy = busy(m);
+    // A row selected by following is no cursor row: its run information is
+    // not read at once while it converts, only when the read-ahead resumes
+    // (as for any row the user has not selected).
+    r.cursor = f && !(r.busy && m.following) ? f->path : "";
+    // Nothing new: nothing sent.
+    if (m.infoSent && r.want.empty() && r.drop.empty() && r.cursor == m.infoSentCursor && r.busy == m.infoSentBusy)
+        return;
+    m.infoSent = true;
+    m.infoSentCursor = r.cursor;
+    m.infoSentBusy = r.busy;
+    if (a.info)
+        a.info(r);
 }
 
 }

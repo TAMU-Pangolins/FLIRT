@@ -1,8 +1,8 @@
 #ifndef FLIRT_UI_SPAWN_H
 #define FLIRT_UI_SPAWN_H
 
-// The helper program flirt-tui runs next to flirt-convert (flirt-waveforms),
-// started as JobManager starts flirt-convert (job.cc
+// The helper programs flirt-tui runs next to flirt-convert (flirt-waveforms,
+// flirt-info), started as JobManager starts flirt-convert (job.cc
 // JobManager::start): its own process group, default signal actions, no
 // signal blocked.
 
@@ -13,7 +13,7 @@
 namespace flirt
 {
 
-// This program's file name, for "flirt-waveforms is missing next to flirt-tui".
+// This program's file name, for "flirt-info is missing next to flirt-tui".
 std::string program_name();
 
 // Starts `exe` with `args` (argv[0] is `exe`): `stdinFd` on its stdin and

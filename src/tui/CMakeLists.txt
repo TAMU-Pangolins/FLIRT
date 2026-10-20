@@ -20,7 +20,7 @@ add_subdirectory(${FTXUI_DIR} ${CMAKE_BINARY_DIR}/FTXUI EXCLUDE_FROM_ALL SYSTEM)
 # The screen's state, drawing and event handling, without a terminal (a
 # test can render the real screen code).
 add_library(flirt_tui_core STATIC text.cc settings.cc model.cc browser.cc view.cc view_parts.cc view_boxes.cc view_right.cc
-    view_dialogs.cc input.cc input_dialogs.cc mouse.cc wave_model.cc wave_view.cc wave_input.cc
+    view_dialogs.cc input.cc input_dialogs.cc mouse.cc wave_model.cc wave_view.cc wave_input.cc info_model.cc info_queue.cc
     plot_layout.cc wave_play.cc wave_full.cc wave_grid.cc picker_view.cc picker_input.cc)
 target_include_directories(flirt_tui_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(flirt_tui_core PUBLIC flirt_ui ftxui::component ftxui::dom ftxui::screen)

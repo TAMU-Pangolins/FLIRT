@@ -3,6 +3,7 @@
 // dialog over the screen.
 
 #include <algorithm>
+#include <cmath>
 #include <ctime>
 #include <map>
 #include <set>
@@ -30,6 +31,45 @@ std::string format_mtime(int64_t mtime)
     return text;
 }
 
+// Mirrors flirt::format_duration (src/flirt/run_summary.cc:86-98): flirt-tui
+// links no flirt library.
+std::string duration_text(int64_t seconds)
+{
+    char buf[64];
+    const long long h = seconds / 3600, m = seconds / 60 % 60, s = seconds % 60;
+    if (h)
+        std::snprintf(buf, sizeof(buf), "%lld h %02lld min %02lld s", h, m, s);
+    else if (m)
+        std::snprintf(buf, sizeof(buf), "%lld min %02lld s", m, s);
+    else
+        std::snprintf(buf, sizeof(buf), "%lld s", s);
+    return buf;
+}
+
+// Mirrors flirt's share_text (src/flirt/run_info.cc:116-131): "0.0011 %".
+std::string share_text(uint64_t part, uint64_t whole)
+{
+    const double percent = whole ? 100.0 * double(part) / double(whole) : 0.0;
+    if (percent < 0.0001)
+        return part ? "< 0.0001 %" : "0 %";
+    int e = static_cast<int>(std::floor(std::log10(percent)));
+    const double unit = std::pow(10.0, e - 1);
+    const double rounded = std::round(percent / unit) * unit;
+    if (rounded >= std::pow(10.0, e + 1))
+        ++e;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*f %%", std::max(0, 1 - e), rounded);
+    return buf;
+}
+
+// Mirrors flirt::format_rate (src/flirt/run_timeline.cc:228-236).
+std::string rate_text(double perSecond)
+{
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), perSecond >= 10 ? "%.0f" : "%.1f", perSecond);
+    return buf;
+}
+
 // 1204377 -> "1,204,377".
 std::string thousands(uint64_t n)
 {
@@ -37,6 +77,57 @@ std::string thousands(uint64_t n)
     for (int i = static_cast<int>(digits.size()) - 3; i > 0; i -= 3)
         digits.insert(static_cast<size_t>(i), ",");
     return digits;
+}
+
+std::string count_of(uint64_t n, const std::string &word)
+{
+    return thousands(n) + " " + word + (n == 1 ? "" : "s");
+}
+
+// "Mar 3 14:10:00" in local time; only "15:12:47" when on the day of `same`.
+std::string local_time(int64_t unixSeconds, const struct tm *same = nullptr)
+{
+    tzset();
+    const time_t t = static_cast<time_t>(unixSeconds);
+    struct tm local = {};
+    localtime_r(&t, &local);
+    char day[16], clock[16];
+    std::strftime(day, sizeof(day), "%b", &local);
+    std::strftime(clock, sizeof(clock), "%H:%M:%S", &local);
+    if (same && same->tm_year == local.tm_year && same->tm_yday == local.tm_yday)
+        return clock;
+    return std::string(day) + " " + std::to_string(local.tm_mday) + " " + clock;
+}
+
+struct tm local_tm(int64_t unixSeconds)
+{
+    const time_t t = static_cast<time_t>(unixSeconds);
+    struct tm local = {};
+    localtime_r(&t, &local);
+    return local;
+}
+
+// "Debian GNU/Linux 12 (bookworm) (x86_64)" -> "Debian GNU/Linux 12".
+std::string without_parentheses(const std::string &s)
+{
+    std::string out;
+    int depth = 0;
+    for (const char c: s)
+    {
+        if (c == '(')
+            ++depth;
+        else if (c == ')' && depth)
+            --depth;
+        else if (!depth)
+            out += c;
+    }
+    std::string squeezed;
+    for (const char c: out)
+        if (c != ' ' || (!squeezed.empty() && squeezed.back() != ' '))
+            squeezed += c;
+    while (!squeezed.empty() && squeezed.back() == ' ')
+        squeezed.pop_back();
+    return squeezed;
 }
 
 std::string text_of(const json &j, const char *key)
@@ -67,6 +158,165 @@ void labeled(std::vector<Line> &out, int inner, const std::string &label, const 
         out.push_back({ (first ? label + std::string(static_cast<size_t>(Label - width(label)), ' ') : indent) + lines[i],
                         level, first ? Label : 0 });
     }
+}
+
+// The run information from flirt-info --json's fields (README "Run
+// information"), as the details show it: Run, Length, Events, Rate and its
+// graph, Lost, mvme, MVLC, Modules; then flirt-info's other details in its own
+// words, its warnings and its note.
+void run_info_lines(const Model &m, const std::string &path, int inner, std::vector<Line> &out)
+{
+    const auto found = m.infos.find(path);
+    if (found == m.infos.end() || found->second.reading)
+    {
+        for (auto &line: wrap("Reading the listfile (flirt-info)...", inner))
+            out.push_back({ line, "muted" });
+        return;
+    }
+    const auto &answer = found->second.answer;
+    if (!answer.is_object())
+        return;
+    if (answer.value("error", json()).is_string())
+    {
+        labeled(out, inner, "Error", answer["error"].get<std::string>(), "error");
+        return;
+    }
+    const auto run = answer.value("run", json());
+    const auto details = answer.value("details", json::array());
+    std::map<std::string, std::string> said;    // flirt-info's details by label
+    for (const auto &d: details.is_array() ? details : json::array())
+        if (d.is_object())
+            said.emplace(d.value("label", std::string()), d.value("text", std::string()));
+    const auto num = [](const json &j, const char *key) { return j.is_object() && j.value(key, json()).is_number(); };
+
+    if (run.is_object())
+    {
+        // Run: the start and end in local time; Length: the duration and the pauses.
+        if (num(run, "startUnix") && num(run, "stopUnix"))
+        {
+            const auto start = run["startUnix"].get<int64_t>();
+            const auto startTm = local_tm(start);
+            labeled(out, inner, "Run", local_time(start) + " → " + local_time(run["stopUnix"].get<int64_t>(), &startTm));
+            if (num(run, "durationSeconds"))
+                labeled(out, inner, "Length", duration_text(run["durationSeconds"].get<int64_t>())
+                        + (num(run, "pauses") && run["pauses"].get<int64_t>() > 0 && num(run, "pausedSeconds")
+                           ? ", paused " + duration_text(run["pausedSeconds"].get<int64_t>()) : ""));
+        }
+        else
+            labeled(out, inner, "Run", said["run"]);
+
+        // Events: the count and the rate, one line per event if several.
+        const auto events = run.value("events", json::array());
+        if (events.is_array())
+            for (size_t i = 0; i < events.size(); ++i)
+            {
+                const auto &e = events[i];
+                const auto count = num(e, "readoutEvents") ? e["readoutEvents"].get<uint64_t>() : 0;
+                char rate[32] = "";
+                if (num(e, "ratePerSecond"))
+                    std::snprintf(rate, sizeof(rate), " · %.1f/s", e["ratePerSecond"].get<double>());
+                labeled(out, inner, i ? "" : "Events",
+                        (events.size() > 1 ? printable(text_of(e, "name")) + " " : "") + thousands(count) + rate);
+            }
+
+        // Rate: the median when nothing was flagged, else flirt-info's text; the graph.
+        const auto rate = run.value("rate", json());
+        const auto flags = rate.is_object() ? rate.value("flags", json()) : json();
+        if (flags.is_array() && flags.empty() && num(rate, "medianPerSecond"))
+            labeled(out, inner, "Rate", "median " + rate_text(rate["medianPerSecond"].get<double>()) + "/s, no low rate");
+        else
+            labeled(out, inner, "Rate", said["rate"]);
+        // At most 60 cells: wider, a steady run looks like one flat bar.
+        const auto graph = rate_graph(run.value("minutes", json()), std::min(60, inner - Label));
+        const std::string indent(Label, ' ');
+        if (!graph.bars.empty())
+            out.push_back({ indent + graph.bars, "muted" });
+        // Only the start and end times under it: a bar can cover several
+        // minutes, so no "per minute"; the help explains it.
+        if (!graph.times.empty())
+            out.push_back({ indent + graph.times, "muted" });
+
+        // Lost: the packets and their bursts (ETH); else flirt-info's text.
+        const auto packets = run.value("packets", json());
+        if (num(packets, "lost") && num(packets, "received"))
+        {
+            const auto lost = packets["lost"].get<uint64_t>();
+            if (!lost)
+                labeled(out, inner, "Lost", "none");
+            else
+                labeled(out, inner, "Lost", count_of(lost, "packet") + " ("
+                        + share_text(lost, packets["received"].get<uint64_t>() + lost) + ")"
+                        + (num(packets, "bursts") ? " in " + count_of(packets["bursts"].get<uint64_t>(), "burst") : ""));
+        }
+        else
+            labeled(out, inner, "Lost", said["lost packets"]);
+
+        // mvme: its version and system; MVLC: the connection (jumbo frames only over ETH).
+        const auto mvme = run.value("mvme", json());
+        const auto version = text_of(mvme, "version"), system = without_parentheses(text_of(mvme, "system"));
+        labeled(out, inner, "mvme", printable((version.empty() ? "unknown" : version) + " · "
+                                              + (system.empty() ? "unknown" : system)));
+        const auto connection = text_of(answer, "connection");
+        const auto jumbo = run.value("jumboFrames", json());
+        // "ETH · jumbo frames off" fits the value column at 80 columns.
+        if (connection == "ETH")
+            labeled(out, inner, "MVLC", "ETH · jumbo frames "
+                    + std::string(jumbo.is_boolean() ? (jumbo.get<bool>() ? "on" : "off") : "unknown"));
+        else if (!connection.empty())
+            labeled(out, inner, "MVLC", printable(connection));
+
+        // Modules: the enabled ones per event, the type only when it differs.
+        std::map<int64_t, std::string> byEvent;
+        const auto modules = answer.value("modules", json::array());
+        for (const auto &mod: modules.is_array() ? modules : json::array())
+        {
+            if (!mod.is_object() || !mod.value("enabled", false) || !num(mod, "event"))
+                continue;
+            const auto name = text_of(mod, "module"), type = text_of(mod, "type");
+            auto &line = byEvent[mod["event"].get<int64_t>()];
+            line += (line.empty() ? "" : ", ") + name + (type != name ? " (" + type + ")" : "");
+        }
+        bool first = true;
+        for (const auto &[event, names]: byEvent)
+        {
+            std::string eventName = "event" + std::to_string(event);
+            if (events.is_array())
+                for (const auto &e: events)
+                    if (num(e, "event") && e["event"].get<int64_t>() == event && !text_of(e, "name").empty())
+                        eventName = text_of(e, "name");
+            labeled(out, inner, first ? "Modules" : "", printable(eventName + ": " + names));
+            first = false;
+        }
+        if (first)
+            labeled(out, inner, "Modules", said["modules"]);
+    }
+
+    // flirt-info's other details as it words them (an unreadable file's error,
+    // a damaged one's problem, settings changes, parser warnings...).
+    static const std::set<std::string> drawn = { "run", "lost packets", "rate", "recorded by", "modules" };
+    for (const auto &d: details.is_array() ? details : json::array())
+    {
+        if (!d.is_object())
+            continue;
+        const auto label = printable(d.value("label", std::string()));
+        if (run.is_object() && drawn.count(label))
+            continue;
+        const auto level = label == "unreadable" ? "error" : label == "damaged" ? "warning" : "";
+        labeled(out, inner, label, d.value("text", std::string()), level);
+    }
+    // flirt-info's rate warnings, then its note (flirt_info.cc, print_details).
+    const auto warnings = answer.value("warnings", json::array());
+    const auto note = text_of(answer, "note");
+    if ((warnings.is_array() && !warnings.empty()) || !note.empty())
+        out.push_back({});
+    for (const auto &w: warnings.is_array() ? warnings : json::array())
+        if (w.is_string())
+        {
+            const auto text = w.get<std::string>();
+            labeled(out, inner, "Warning", text.rfind("warning: ", 0) == 0 ? text.substr(9) : text, "warning");
+        }
+    if (!note.empty())
+        labeled(out, inner, "Note", note.rfind("note: ", 0) == 0 ? note.substr(6) : note, "warning");
 }
 
 // A count's share of a channel's hits, one decimal: "0.8%", "<0.1%" when
@@ -272,7 +522,7 @@ std::vector<Line> detail_lines(const Model &m, int width)
         return l.out;
     }
     // The name, its Size, the last job's part
-    // (Status, why, its warnings and notes, the files).
+    // (Status, why, its warnings and notes, the files), the run information.
     const auto *run = run_for(m, f->path);
     l.add(f->name, "heading");
     labeled(l.out, l.width, "Size", format_size(f->size < 0 ? 0 : f->size));
@@ -291,13 +541,18 @@ std::vector<Line> detail_lines(const Model &m, int width)
             labeled(l.out, l.width, "To do", st["todo"].get<std::string>());
         if (st.value("check", json()).is_string())
             labeled(l.out, l.width, "Check", st["check"].get<std::string>(), "muted");
-        // Only the warnings and notes: the Log tab has every message.
+        // Only the warnings and notes: the Log tab has every message. A note
+        // that is flirt-info's own (both from src/flirt/run_info.cc) is left
+        // to the run information below.
+        const auto info = m.infos.find(f->path);
+        const auto infoNote = info != m.infos.end() && !info->second.reading ? text_of(info->second.answer, "note")
+                                                                              : std::string();
         for (const auto &msg: run->at("messages"))
         {
             const auto text = msg.is_string() ? msg.get<std::string>() : std::string();
             if (text.rfind("warning: ", 0) == 0)
                 labeled(l.out, l.width, "Warning", text.substr(9), "warning");
-            else if (text.rfind("note: ", 0) == 0)
+            else if (text.rfind("note: ", 0) == 0 && text != infoNote)
                 labeled(l.out, l.width, "Note", text.substr(6));
         }
         // The kinds among the outputs (src/ui/job.cc, the "result" event).
@@ -322,6 +577,8 @@ std::vector<Line> detail_lines(const Model &m, int width)
         if (hitFlags.is_object())
             hit_flag_lines(hitFlags, l.width, l.out);
     }
+    l.blank();
+    run_info_lines(m, f->path, l.width, l.out);
     const auto report = run ? run->value("report", json()) : json();
     if (report.is_string())
     {
@@ -546,6 +803,8 @@ std::vector<Line> help_lines(const Model &m, int width)
     l.add("Details and Log (box 3)", "heading");
     l.key("↑↓", "scroll; PgUp, PgDn, Home, End too");
     l.key("[, ]", "Details or Log");
+    l.key("Rate's graph", "the events per second over the run, one bar per minute or per few minutes, the "
+                          "highest bar the run's highest rate; a gap is a pause");
     l.key("r", "show or hide the report, if the run has one");
     l.key("Esc", "hide the report; else back to box 1");
     l.blank();

@@ -1,9 +1,9 @@
 #ifndef FLIRT_COMMON_CORES_H
 #define FLIRT_COMMON_CORES_H
 
-// How many listfiles flirt-info reads at once (docs/design.md, "Reading
-// several listfiles at once"): a fraction of the cores, never all of them,
-// fewer when the cores are busy.
+// How many listfiles flirt-info and flirt-tui read at once (docs/design.md,
+// "Reading several listfiles at once"): a fraction of the cores, never all of
+// them, fewer when the cores are busy.
 
 #include <chrono>
 #include <cstdint>

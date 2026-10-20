@@ -7,6 +7,7 @@
 // progress are job.cc's display fields, shown as they are.
 
 #include <cstdint>
+#include <ctime>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -139,6 +140,17 @@ struct WaveEntry
     bool opened = false;
 };
 
+// A listfile's run information for the details:
+// flirt-info --json's answer, cached by path, size and mtime.
+struct RunInfo
+{
+    bool known = false;             // size and mtime known (stat worked); else asked at every open
+    int64_t size = -1;
+    timespec mtime = {};
+    bool reading = false;
+    json answer;                    // flirt-info's JSON line or {"error": ...}; null while reading
+};
+
 struct Model
 {
     // The help's first lines: the version, the machine and the user (empty
@@ -171,10 +183,21 @@ struct Model
     Dialog dialog = Dialog::None;
     Browser browser;
     std::string detailPath;     // the row the details show
+    std::string infoShown;      // the row whose run information was asked for while shown
     int detailScroll = 0;
     bool reportShown = false;
     std::map<std::string, std::vector<std::string>> reports;    // report path -> lines
     std::map<std::string, std::string> reportErrors;            // report path -> error
+    std::map<std::string, RunInfo> infos;                       // listfile path -> run information
+    std::vector<std::string> infoOutbox;                        // paths to ask flirt-info about
+    std::vector<std::string> infoDrops;                         // rows taken off while being read
+    // What the last read-ahead plan saw (plan_info plans again only when one
+    // changes or a read finished) and what was last sent.
+    std::vector<std::string> infoPlannedRows;
+    std::string infoPlannedCursor, infoSentCursor;
+    bool infoPlannedBusy = false, infoSentBusy = false, infoSent = false;
+    bool infoReplan = true;     // a read finished
+    int infoPlans = 0;          // plans made (tests)
     int logScroll = 0;
     int helpScroll = 0;
     int commandScroll = 0;
@@ -276,6 +299,33 @@ void browser_button(Model &m, int index);
 
 // The report's lines (pretty-printed JSON), read once per job.
 void load_report(Model &m, const std::string &path);
+
+// The detail's run information (info_model.cc). Asks flirt-info (into the
+// outbox) unless the cache has an answer or a reading for the file's size
+// and mtime; a file that cannot be stat'ed is asked about every time it is
+// shown (`again`), once by the read-ahead.
+void request_info(Model &m, const std::string &path, bool again = true);
+// The read-ahead (docs/design.md, "Reading several listfiles at once"):
+// every row's run information asked for, the cursor's row first, then list
+// order; a row taken off the list while being read is dropped (infoDrops).
+// Only when the list, the cursor's row or a conversion's running changed, or
+// a read finished: not at every key or play tick (each plan stats every
+// row).
+void plan_info(Model &m);
+// An answer for the path it was asked for (never the JSON's "listfile"),
+// with the file's size and mtime when it was read (size < 0: unknown).
+void apply_info_answer(Model &m, const std::string &path, int64_t size, const timespec &mtime, const json &answer);
+// The rate graph of run.minutes in at most `width` cells: one character per
+// cell of g minutes (g = 1 if they fit, else ceil(n / width)), the cell's
+// events / live seconds scaled to the largest cell with >= 10 live seconds;
+// a paused cell (no live seconds) a space. `times`: the first and last
+// minute's HH:MM under it, if at least 12 cells. Both empty below 10 cells of
+// width or 2 cells of graph.
+struct RateGraph
+{
+    std::string bars, times;
+};
+RateGraph rate_graph(const json &minutes, int width);
 
 // The waveform view (wave_model.cc).
 constexpr double SamplePeriodNs = 12.5;   // mvme's MdppDefaultSamplePeriod (mdpp_decode.h:21)

@@ -10,6 +10,7 @@
 #include <functional>
 #include <string>
 
+#include "info_queue.h"
 #include "model.h"
 
 namespace flirt::tui
@@ -26,6 +27,10 @@ struct Actions
     // one not sent yet), and no file shown any more (its reader stops).
     std::function<void(const json &request)> waveforms;
     std::function<void()> closeWaveforms;
+    // The run information: flirt-info --json for these listfiles, the
+    // cursor's row, the rows taken off, and whether a conversion runs (sent
+    // after every event).
+    std::function<void(const InfoRequests &requests)> info;
     int width = 80, height = 24;    // the terminal, for scrolling and mouse hits
     // Milliseconds of a steady clock, for double-clicks; unset: steady_clock.
     std::function<int64_t()> clockMs;
@@ -41,6 +46,8 @@ void refresh(Model &m, Actions &actions);
 // Sends the waveform view's pending request, if any (after an event, and
 // after an answer was applied: a tree list asks for a frame).
 void send_waveform_request(Model &m, Actions &actions);
+// Sends the run information requests (after an event).
+void send_info_requests(Model &m, Actions &actions);
 
 }
 
