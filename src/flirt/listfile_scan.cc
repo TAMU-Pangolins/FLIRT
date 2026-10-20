@@ -1,7 +1,12 @@
 #include "flirt/listfile_scan.h"
 
+#include "flirt/library_log.h"
+
 #include <mesytec-mvlc/mvlc_command_builders.h>
+#include <mesytec-mvlc/mvlc_listfile_zip.h>
 #include <mesytec-mvlc/mvlc_readout_config.h>
+#include <mesytec-mvlc/mvlc_replay_worker.h>
+#include <mesytec-mvlc/readout_buffer_queues.h>
 
 namespace mvlc = mesytec::mvlc;
 namespace parser = mesytec::mvlc::readout_parser;
@@ -33,6 +38,10 @@ std::vector<mvlc::StackCommandBuilder> sanitize_readout_stacks(
 
     return result;
 }
+
+// mvme_context.cc:81-82, as run_pipeline.
+constexpr size_t ReadoutBufferCount = 4;
+constexpr size_t ReadoutBufferSize = 1024 * 1024;
 
 }
 
@@ -91,6 +100,95 @@ parser::ReadoutParserState make_listfile_parser(const ListfileInfo &listfile, co
     }
 
     return parserState;
+}
+
+ScanResult scan_listfile(const ListfileInfo &listfile, const VMEConfig &vmeConfig)
+{
+    ScanResult result;
+    auto parserState = make_listfile_parser(listfile, vmeConfig);
+    // mesytec-mvlc's messages are counted and kept, never printed (library_log.h).
+    auto libraryMessages = std::make_shared<MessageSink>(KeptLibraryMessages);
+    ScopedLoggerSinks libraryLog(replay_loggers(), libraryMessages);
+    auto &pc = result.parserCounters;
+
+    parser::ReadoutParserCallbacks callbacks;
+    callbacks.eventData = [&](void *, int, int, const parser::ModuleData *, unsigned)
+    {
+        result.run.eventData(pc);
+    };
+    callbacks.systemEvent = [&](void *, int, const uint32_t *header, uint32_t size)
+    {
+        result.run.systemEvent(header, size, pc);
+    };
+
+    // The replay as run_pipeline does it (pipeline.cc, mirroring
+    // mvlc_listfile_worker.cc:230-259), through a handle that checks what it
+    // delivers (I2).
+    mvlc::listfile::ZipReader zip;
+    zip.openArchive(listfile.archivePath);
+    CheckedReadHandle readHandle(zip, listfile.listfileEntry);
+
+    mvlc::ReadoutBufferQueues queues(ReadoutBufferSize, ReadoutBufferCount);
+    mvlc::ReplayWorker replay(queues, &readHandle);
+
+    if (auto ec = replay.start().get())
+        throw std::runtime_error("replay start failed: " + ec.message());
+
+    auto process = [&](mvlc::ReadoutBuffer *buffer)
+    {
+        auto view = buffer->viewU32();
+
+        // MVLC_StreamWorker::processBuffer (mvlc_stream_worker.cc:904-950):
+        // exceptions escaping the parser are skipped, as in run_pipeline.
+        try
+        {
+            parser::parse_readout_buffer(static_cast<mvlc::ConnectionType>(buffer->type()), parserState,
+                                         callbacks, pc, buffer->bufferNumber(), view.data(), view.size());
+        }
+        catch (const std::exception &)
+        {
+        }
+
+        queues.emptyBufferQueue().enqueue(buffer);
+    };
+
+    try
+    {
+        // MVLC_StreamWorker::start loop with StopWhenQueueEmpty (mvlc_stream_worker.cc:626-714).
+        while (true)
+        {
+            if (auto buffer = queues.filledBufferQueue().dequeue(std::chrono::milliseconds(100)))
+            {
+                process(buffer);
+                continue;
+            }
+
+            if (replay.state() == mvlc::ReplayWorker::State::Idle)
+            {
+                while (auto buffer = queues.filledBufferQueue().dequeue())
+                    process(buffer);
+                break;
+            }
+        }
+    }
+    catch (...)
+    {
+        replay.stop();
+        throw;
+    }
+
+    auto counters = replay.counters();
+    result.listfileEntry = readHandle.check();
+
+    // As run_pipeline: a read error is recorded (I2), anything else thrown.
+    if (counters.eptr && result.listfileEntry.readError.empty())
+        std::rethrow_exception(counters.eptr);
+    if (counters.ec)
+        throw std::runtime_error("replay error: " + counters.ec.message());
+
+    result.run.finish(pc);
+    result.parserWarnings = libraryMessages->result();
+    return result;
 }
 
 }

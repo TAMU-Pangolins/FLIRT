@@ -1,8 +1,15 @@
 #ifndef FLIRT_LISTFILE_SCAN_H
 #define FLIRT_LISTFILE_SCAN_H
 
+// What the readout parser's callbacks record about the run itself (run
+// times, the rate over time, packet loss bursts), shared by the conversion's
+// pipeline and scan_listfile(), and scan_listfile(): a parse-only replay for
+// flirt-info, with no extractor, analysis, splitter or ROOT.
+
 #include <mesytec-mvlc/mvlc_readout_parser.h>
 
+#include "flirt/integrity.h"
+#include "flirt/library_log.h"
 #include "flirt/listfile.h"
 #include "flirt/run_summary.h"
 #include "flirt/run_timeline.h"
@@ -53,6 +60,20 @@ uint64_t readout_events(const mesytec::mvlc::readout_parser::ReadoutParserCounte
 // unsupported_input on a mismatch (pipeline.cc, mvlc_stream_worker.cc:549-562).
 mesytec::mvlc::readout_parser::ReadoutParserState make_listfile_parser(const ListfileInfo &listfile,
                                                                         const VMEConfig &vmeConfig);
+
+struct ScanResult
+{
+    mesytec::mvlc::readout_parser::ReadoutParserCounters parserCounters;
+    RunRecorder run;
+    // The listfile entry as the replay read it (I2); a read error ends the
+    // replay early and is recorded here, as in run_pipeline.
+    EntryCheck listfileEntry;
+    // mesytec-mvlc's log messages during the replay, as run_pipeline's.
+    LibraryMessages parserWarnings;
+};
+
+// Replays the listfile through the readout parser only, as run_pipeline does.
+ScanResult scan_listfile(const ListfileInfo &listfile, const VMEConfig &vmeConfig);
 
 }
 
