@@ -33,6 +33,10 @@ json text_or_null(const std::string &text)
     return text.empty() ? json(nullptr) : json(text);
 }
 
+// mesytec-mvlc asks the OS for this socket receive buffer
+// (DesiredSocketReceiveBufferSize, mvlc_impl_eth.cc:83).
+constexpr uint64_t DesiredReceiveBufferBytes = 10u * 1024 * 1024;
+
 std::string plural(uint64_t n, const char *word)
 {
     return std::to_string(n) + " " + word + (n == 1 ? "" : "s");
@@ -84,6 +88,13 @@ std::vector<size_t> top_loss_minutes(const std::vector<MinuteBin> &bins, std::ve
         top.resize(3);
     std::sort(top.begin(), top.end());
     return top;
+}
+
+// The receive buffer was below what mesytec-mvlc asks for, and packets were lost.
+bool low_receive_buffer(const RunFacts &facts)
+{
+    return facts.counters.ethPacketLoss && facts.log.receiveBufferBytes && facts.log.receiveBuffer
+        && *facts.log.receiveBufferBytes < DesiredReceiveBufferBytes;
 }
 
 // "1,073,420": thousands separated (common/failures.h).
@@ -143,6 +154,9 @@ RunFacts run_facts(const ListfileInfo &listfile, const parser::ReadoutParserCoun
     facts.events = readout_events(counters);
     facts.lossBursts = recorder.lossBursts;
     facts.connection = listfile.format;
+    // As the settings-changes check: only an intact messages.log.
+    if (!listfile.messagesLogEntry.entry.empty() && listfile.messagesLogEntry.result() == "pass")
+        facts.log = read_messages_log_facts(listfile.messagesLog);
     facts.settings = settings_changes(listfile);
     return facts;
 }
@@ -205,6 +219,28 @@ std::string loss_text(const RunFacts &facts)
     for (size_t j = 0; j < top.size(); ++j)
         text += (j ? ", " : "") + hh_mm(bins[top[j]].start) + " (" + std::to_string(bins[top[j]].lostPackets) + ")";
     return text;
+}
+
+std::string receive_buffer_note(const RunFacts &facts)
+{
+    // mesytec-mvlc asks for 10 MiB (mvlc_impl_eth.cc:83); the OS grants at
+    // most net.core.rmem_max (doubled), and mvme's own note: "Setting
+    // rmem_max can help a lot ... net.core.rmem_max=104857600"
+    // (src/mvlc/mvlc-TODO.txt:97-98). mvme logs what it got (mvlc_daq.cc:584-586).
+    if (!low_receive_buffer(facts))
+        return {};
+    return "note: the DAQ PC's receive buffer for the MVLC was " + *facts.log.receiveBuffer
+        + ", below the 10 MB mesytec-mvlc asks for; mesytec's MVLC notes suggest raising net.core.rmem_max"
+          " (e.g. to 104857600) on the DAQ PC";
+}
+
+std::string receive_buffer_text(const RunFacts &facts)
+{
+    if (!low_receive_buffer(facts))
+        return {};
+    return "the DAQ PC's receive buffer for the MVLC was " + *facts.log.receiveBuffer
+        + ", below the 10 MB mesytec-mvlc asks for; mesytec's MVLC notes suggest raising net.core.rmem_max"
+          " on the DAQ PC (e.g. to 104857600)";
 }
 
 std::string loss_block_text(const RunFacts &facts)
@@ -270,6 +306,13 @@ RunFacts run_facts_from_json(const json &run)
         facts.counters.ethPacketLoss = packets.value("lost", uint64_t(0));
         facts.lossBursts = packets.value("bursts", uint64_t(0));
     }
+
+    facts.log.receiveBuffer = optional_of<std::string>(run, "receiveBuffer");
+    facts.log.receiveBufferBytes = optional_of<uint64_t>(run, "receiveBufferBytes");
+    facts.log.jumboFrames = optional_of<bool>(run, "jumboFrames");
+    const auto mvme = run.value("mvme", json::object());
+    facts.log.mvmeVersion = optional_of<std::string>(mvme, "version");
+    facts.log.system = optional_of<std::string>(mvme, "system");
 
     for (const auto &bin: run.value("minutes", json::array()))
     {
@@ -371,6 +414,10 @@ json run_json(const RunFacts &facts, const VMEConfig &vmeConfig)
              {"events", events}, {"modules", modules},
              {"settingsChanges", settings_changes_json(facts.settings)},
              {"packets", packets},
+             {"receiveBuffer", or_null(facts.log.receiveBuffer)},
+             {"receiveBufferBytes", or_null(facts.log.receiveBufferBytes)},
+             {"jumboFrames", or_null(facts.log.jumboFrames)},
+             {"mvme", { {"version", or_null(facts.log.mvmeVersion)}, {"system", or_null(facts.log.system)} }},
              {"rate", { {"medianPerSecond", or_null(facts.rate.median)}, {"flags", flags} }},
              {"minutes", minutes} };
 }

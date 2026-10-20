@@ -2,8 +2,8 @@
 #define FLIRT_RUN_INFO_H
 
 // What the listfile records about the run itself, as flirt-convert's
-// report["run"] shows it: run times, counts, packet loss, the rate over time
-// and the settings changes.
+// report["run"] shows it: run times, counts, packet loss, the rate over time,
+// messages.log's facts and the settings changes.
 
 #include <mesytec-mvlc/mvlc_constants.h>
 #include <mesytec-mvlc/mvlc_readout_parser.h>
@@ -13,6 +13,7 @@
 
 #include "flirt/listfile.h"
 #include "flirt/listfile_scan.h"
+#include "flirt/messages_log.h"
 #include "flirt/run_summary.h"
 #include "flirt/run_timeline.h"
 #include "flirt/settings_changes.h"
@@ -29,6 +30,7 @@ struct RunFacts
     uint64_t events = 0;            // readout events, the sum of eventHits
     uint64_t lossBursts = 0;
     mesytec::mvlc::ConnectionType connection = mesytec::mvlc::ConnectionType::ETH;
+    MessagesLogFacts log;           // unknowns if messages.log is absent or damaged
     SettingsChanges settings;
 };
 
@@ -65,10 +67,17 @@ size_t minutes_with_loss(const RateAnalysis &rate);
 // most at 14:31, 14:52 and 15:03 (3 each)". Empty if no packet was lost.
 std::string loss_block_text(const RunFacts &facts);
 
+// The receive-buffer note, when packets were lost and messages.log's
+// receive buffer is below the 10 MiB mesytec-mvlc asks for; else empty.
+std::string receive_buffer_note(const RunFacts &facts);
+
+// The same note as flirt-convert's run block words it, without "note: ".
+std::string receive_buffer_text(const RunFacts &facts);
+
 // A report's "run" (run_json's object) back into the facts the texts above
-// need: times, events, packets, bursts, the rate and the settings changes
-// (counters: only the ETH packets). Missing fields stay unknown;
-// flirt-convert's batch reads its children's reports with it.
+// need: times, events, packets, bursts, the rate, messages.log's facts and
+// the settings changes (counters: only the ETH packets). Missing fields stay
+// unknown; flirt-convert's batch reads its children's reports with it.
 RunFacts run_facts_from_json(const nlohmann::json &run);
 
 }

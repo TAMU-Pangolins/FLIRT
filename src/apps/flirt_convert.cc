@@ -965,9 +965,12 @@ int convert_one(int argc, char *argv[])
         std::cerr << flirt::run_summary_line(runFacts.times, runFacts.events) << "\n";
         if (const auto line = flirt::settings_changes_line(runFacts.settings); !line.empty())
             std::cerr << line << "\n";
-        // Loss details (run_info.h) and the rate warnings (run_timeline.h).
+        // Loss details, the receive-buffer note (run_info.h) and the rate
+        // warnings (run_timeline.h).
         if (const auto loss = flirt::loss_text(runFacts); !loss.empty())
             std::cerr << "lost packets: " << loss << "\n";
+        if (const auto note = flirt::receive_buffer_note(runFacts); !note.empty())
+            std::cerr << note << "\n";
         for (const auto &line: flirt::rate_warnings(runFacts.rate, "the report lists them all"))
             std::cerr << line << "\n";
         for (const auto &line: waveformConfig.messages)

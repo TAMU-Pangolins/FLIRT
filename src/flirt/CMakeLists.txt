@@ -10,6 +10,7 @@ add_library(flirt STATIC
     run_summary.cc
     settings_changes.cc
     run_timeline.cc
+    messages_log.cc
     listfile_scan.cc
     run_info.cc
     library_log.cc
