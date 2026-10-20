@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -27,6 +28,8 @@
 
 namespace flirt
 {
+
+using json = nlohmann::json;
 
 namespace
 {
@@ -420,6 +423,7 @@ void find_usage(const char *argv0)
               << "Prints the dither offset of each _raw.root that mvme_root_client wrote, one\n"
               << "line per file, and converts nothing. Convert with it: --dither-offset <N>\n"
               << "(README, \"Dither offset\"). Searches the first 4,294,967,296 draws.\n"
+              << "--json-events: events on stdout instead, for programs (README, \"Events for programs\").\n"
               << "Exit codes: 0 every offset found, 1 not every one, 2 usage.\n";
 }
 
@@ -435,8 +439,34 @@ bool is_listfile_input(const std::string &path)
 
 int run_find_dither_offset(int argc, char *argv[])
 {
+    // --json-events: events on stdout (README "Events for programs"), on a
+    // copy of stdout while fd 1 points at stderr (stray library output cannot
+    // corrupt them).
+    bool events = false;
+    for (int i = 1; i < argc; ++i)
+        events = events || std::string(argv[i]) == "--json-events";
+    FILE *out = stdout;
+    if (events)
+    {
+        const int fd = fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 3);
+        if (fd < 0 || dup2(STDERR_FILENO, STDOUT_FILENO) < 0 || !(out = fdopen(fd, "w")))
+        {
+            std::perror("flirt-convert: cannot set up stdout");
+            return 1;
+        }
+    }
+    auto event = [&](const json &e) {
+        const auto text = dump_valid_utf8(e) + "\n";
+        std::fwrite(text.data(), 1, text.size(), out);
+        std::fflush(out);
+    };
     auto usage_error = [&](const std::string &error) {
         std::cerr << "error: " << error << "\n";
+        if (events)
+        {
+            event({ {"event", "usage-error"}, {"message", error} });
+            event({ {"event", "end"}, {"exitCode", 2} });
+        }
         return 2;
     };
 
@@ -445,7 +475,7 @@ int run_find_dither_offset(int argc, char *argv[])
     {
         const std::string arg = argv[i];
         std::string error;
-        if (arg == "--find-dither-offset")
+        if (arg == "--find-dither-offset" || arg == "--json-events")
             continue;
         if (arg == "-h" || arg == "--help")
         {
@@ -468,9 +498,13 @@ int run_find_dither_offset(int argc, char *argv[])
     }
     if (paths.empty())
     {
-        std::cerr << "error: no files\n";
-        find_usage(argv[0]);
-        return 2;
+        if (!events)
+        {
+            std::cerr << "error: no files\n";
+            find_usage(argv[0]);
+            return 2;
+        }
+        return usage_error("no files");
     }
 
     std::vector<OfficialRaw> raws;
@@ -480,15 +514,25 @@ int run_find_dither_offset(int argc, char *argv[])
     for (auto &r: raws)
         pointers.push_back(&r);
 
-    const bool terminal = isatty(STDERR_FILENO);
+    const bool terminal = !events && isatty(STDERR_FILENO);
     const bool searching = std::any_of(raws.begin(), raws.end(), [](const OfficialRaw &r) { return r.problem.empty(); });
     if (terminal && searching)
         std::cerr << "searching the first " << with_separators(DitherSearchDraws) << " draws of TRandom3(4357)..." << std::flush;
+    // The events' progress: at the start, then at most 4 a second.
+    using Clock = std::chrono::steady_clock;
+    auto lastProgress = Clock::now();
+    if (events && searching)
+        event({ {"event", "progress"}, {"done", 0}, {"total", DitherSearchDraws} });
     search_dither_offsets(pointers, DitherSearchDraws, [&](uint64_t done) {
         if (terminal)
             std::cerr << "\r\033[Ksearching TRandom3(4357): " << with_separators(done) << " of "
                       << with_separators(DitherSearchDraws) << " draws ("
                       << static_cast<int>(100.0 * done / DitherSearchDraws) << "%)" << std::flush;
+        if (events && Clock::now() - lastProgress >= std::chrono::milliseconds(250))
+        {
+            lastProgress = Clock::now();
+            event({ {"event", "progress"}, {"done", done}, {"total", DitherSearchDraws} });
+        }
     }, {});
     if (terminal && searching)
         std::cerr << "\r\033[K" << std::flush;
@@ -497,6 +541,12 @@ int run_find_dither_offset(int argc, char *argv[])
     for (const auto &r: raws)
     {
         status = r.found ? status : 1;
+        if (events)
+        {
+            event({ {"event", "dither-offset"}, {"file", r.path}, {"offset", r.found ? json(r.offset) : json()},
+                    {"heldTwice", r.found && r.heldTwice}, {"problem", r.found ? json() : json(r.problem)} });
+            continue;
+        }
         std::string line = printable(r.path) + ": ";
         if (r.found)
         {
@@ -508,6 +558,8 @@ int run_find_dither_offset(int argc, char *argv[])
             line += "no dither offset: " + r.problem;
         std::cout << line << "\n";
     }
+    if (events)
+        event({ {"event", "end"}, {"exitCode", status} });
     std::cout << std::flush;
     return status;
 }
