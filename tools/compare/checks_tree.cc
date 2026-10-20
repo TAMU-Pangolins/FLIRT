@@ -89,15 +89,17 @@ bool compare_tree_layout(const std::string &name, TTree *a, TTree *b, Check &c, 
 
     // Fields ROOT derives from all branches of the tree (flush point, basket
     // sizes and boundaries, byte totals) or from a member's position in its
-    // class (element id). With ignored branches or members they are reported,
-    // not compared.
+    // class (element id). With ignored branches or members, or with
+    // --data-only, they are reported, not compared.
     size_t notCompared = 0;
     auto allBranchesField = [&](const std::string &what, auto x, auto y)
     {
-        if (!ignore.active())
+        if (!ignore.active() && !ignore.dataOnly)
             field(what, x, y);
         else if (x != y && notCompared++ < 5)
-            c.notes.push_back("IGNORED (depends on ignored branches): " + mismatch(name + " " + what, x, y));
+            c.notes.push_back((ignore.dataOnly ? "NOT COMPARED (--data-only): "
+                                               : "IGNORED (depends on ignored branches): ")
+                              + mismatch(name + " " + what, x, y));
     };
 
     field("title", std::string(a->GetTitle()), std::string(b->GetTitle()));
@@ -155,11 +157,14 @@ bool compare_tree_layout(const std::string &name, TTree *a, TTree *b, Check &c, 
             for (int k = 0; k <= x->GetWriteBasket(); k++)
                 allBranchesField(what + " basket " + std::to_string(k) + " first entry",
                                  x->GetBasketEntry()[k], y->GetBasketEntry()[k]);
-        if (x->GetZipBytes() != y->GetZipBytes())
+        if (x->GetZipBytes() != y->GetZipBytes() && !ignore.dataOnly)
             c.notes.push_back(mismatch(what + " fZipBytes (not compared)", x->GetZipBytes(), y->GetZipBytes()));
     }
 
-    if (ignore.active())
+    if (ignore.dataOnly)
+        c.notes.push_back("NOT COMPARED " + name + " (--data-only): basket layout, byte totals and element ids ("
+                          + std::to_string(notCompared) + " such field(s) differ)");
+    else if (ignore.active())
         c.notes.push_back("IGNORED " + name + ": basket layout, byte totals and element ids not compared ("
                           + std::to_string(notCompared) + " such field(s) differ)");
     return sameLeaves;

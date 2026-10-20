@@ -24,7 +24,7 @@ void usage(const char *argv0)
     std::fprintf(stderr,
                  "usage: %s <cand_raw.root> <ref_raw.root> [--histos <cand_histos.root> <ref_histos.root>]"
                  " [--max-report N] [--ignore-branch-regex <regex>] [--allow-fused-sumwx2]"
-                 " [--ignore-run-id]\n", argv0);
+                 " [--ignore-run-id] [--data-only]\n", argv0);
 }
 
 std::unique_ptr<TFile> open_read(const std::string &path)
@@ -76,6 +76,8 @@ int main(int argc, char *argv[])
             fused.allowed = true;
         else if (arg == "--ignore-run-id")
             ignoreRunId = true;
+        else if (arg == "--data-only")
+            ignore.dataOnly = true;
         else if (!arg.empty() && arg[0] == '-')
         {
             usage(argv[0]);
@@ -116,13 +118,16 @@ int main(int argc, char *argv[])
         std::printf("IGNORING branches, class members and histograms matching '%s'.\n"
                     "Basket layout, byte totals and element ids are then not compared.\n",
                     ignore.pattern.c_str());
+    if (ignore.dataOnly)
+        std::printf("DATA ONLY (--data-only): every value and every histogram's contents bitwise; tree layout,"
+                    " basket sizes, byte counts and compression not compared.\n");
     if (fused.allowed)
         std::printf("ALLOWING a histogram's fTsumwx2 to differ where one file holds the fused sum and the other"
                     " the separate sum, recomputed from the raw tree (--allow-fused-sumwx2).\n");
     check_keys(cand.get(), ref.get(), make("raw: keys"), ignore);
     check_streamers(cand.get(), ref.get(), make("raw: streamer info"), ignore);
     check_run_info(cand.get(), ref.get(), make("raw: MVMERunInfo"), ignoreRunId);
-    Check &layout = make("raw: tree layout");
+    Check &layout = make(ignore.dataOnly ? "raw: tree structure (layout not compared)" : "raw: tree layout");
     Check &values = make("raw: tree values (bitwise)");
     check_trees(cand.get(), ref.get(), layout, values, ignore);
 
@@ -156,6 +161,9 @@ int main(int argc, char *argv[])
             + std::to_string(fused.histograms) + " histogram" + (fused.histograms == 1 ? "" : "s");
     if (!identical)
         std::printf("DIFFERENT (%.1f s)\n", secs);
+    else if (ignore.dataOnly)
+        std::printf("SAME DATA (layout not compared)%s%s (%.1f s)\n", except.empty() ? "" : " EXCEPT ",
+                    except.c_str(), secs);
     else if (!except.empty())
         std::printf("IDENTICAL EXCEPT %s (%.1f s)\n", except.c_str(), secs);
     else

@@ -18,6 +18,10 @@ struct Ignore
 {
     std::optional<std::regex> re;
     std::string pattern;
+    // --data-only: likewise the fields ROOT derives from compressed bytes
+    // (flush point, basket sizes and boundaries, byte totals), as for files
+    // written with another compression. Values are compared as always.
+    bool dataOnly = false;
 
     bool active() const { return re.has_value(); }
     bool matches(const std::string &name) const { return re && std::regex_search(name, *re); }
