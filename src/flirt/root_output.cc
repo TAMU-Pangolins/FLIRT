@@ -415,9 +415,14 @@ void RootWriter::Private::beginRun(const es::Message &, const es::StreamInfo &st
 
         eventTrees = exp->MakeTrees();
 
+        result.eventTrees.clear();
         for (auto &tree: eventTrees)
         {
             tree->SetMaxTreeSize(100000000000LL); // m_rootMaxTreeSize default, :286
+            result.eventTrees.emplace_back(tree->GetName(), std::vector<std::string>());
+            TIter next(tree->GetListOfBranches());
+            while (auto branch = next())
+                result.eventTrees.back().second.push_back(branch->GetName());
         }
 
         MVMERunInfo info;

@@ -40,6 +40,9 @@ struct RootOutputResult
     std::string histosFile;         // published <outDir>/<runId>_histos.root
     std::vector<std::string> extraFiles; // published addFile() files, in order
     std::vector<size_t> eventHits;  // tree entries per VME event
+    // Each event tree's name and top-level branches (the modules), for
+    // --dither-offset-from's same-run check.
+    std::vector<std::pair<std::string, std::vector<std::string>>> eventTrees;
     size_t totalDataBytes = 0;
     // The files' sizes, as written (and as published).
     uint64_t rawBytes = 0, histosBytes = 0;
