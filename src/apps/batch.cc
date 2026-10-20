@@ -5,6 +5,7 @@
 // exactly like a fresh `mvme_root_client --single-run`. The parent itself never
 // initializes ROOT. Outputs are never deleted or overwritten.
 
+#include <RVersion.h>
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -32,6 +33,7 @@
 #include "common/platform.h"
 #include "common/utf8.h"
 #include "flirt/listfile.h"
+#include "flirt_version.h"
 
 extern char **environ;
 
@@ -57,6 +59,7 @@ struct usage_error: std::runtime_error
 void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <input>... -o <outdir> [-j N] [--list <file>]"
+              << " [--summary <file.json>]"
               << " [--dither-offset <N>]"
               << " [--accept-damaged-input]\n"
               << "\n"
@@ -73,14 +76,16 @@ void usage(const char *argv0)
               << "                      a time)\n"
               << "  --list <file>       inputs, one per line; blank lines and lines starting\n"
               << "                      with # are ignored (repeatable)\n"
+              << "  --summary <file>    also write the summary as JSON to this new file (exit\n"
+              << "                      code 1 if it cannot be written)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
               << "                      mvme_root_client --single-run (default: 0)\n"
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
               << "\n"
-              << "Exit codes: 0 all converted, 1 a conversion failed, 2 usage, 3 unsupported\n"
-              << "input, 130 interrupted.\n";
+              << "Exit codes: 0 all converted, 1 a conversion failed or the --summary file could\n"
+              << "not be written, 2 usage, 3 unsupported input, 130 interrupted.\n";
 }
 
 struct Options
@@ -88,6 +93,7 @@ struct Options
     std::vector<std::string> inputs;
     std::string outDir;
     unsigned jobs = 1;
+    std::string summaryPath;
     uint64_t ditherOffset = 0;
     bool acceptDamagedInput = false;
 };
@@ -194,6 +200,7 @@ Options parse_args(int argc, char *argv[])
             opt.jobs = static_cast<unsigned>(jobs);
         }
         else if (arg == "--list") sources.emplace_back(true, value());
+        else if (arg == "--summary") opt.summaryPath = value();
         else if (arg == "--dither-offset")
         {
             opt.ditherOffset = parse_number(arg, value());
@@ -227,12 +234,24 @@ Options parse_args(int argc, char *argv[])
     if (const auto refusal = name_refusal(own_name(opt.outDir)); !refusal.empty() && opt.outDir != "/")
         throw usage_error("output directory " + refusal);
 
+    if (!opt.summaryPath.empty())
+        check_name("--summary", opt.summaryPath);
+    if (!opt.summaryPath.empty() && exists(opt.summaryPath))
+        throw usage_error("summary file exists: " + opt.summaryPath);
+
     return opt;
 }
 
 std::string raw_path(const Options &opt, const Run &run) { return opt.outDir + "/" + run.runId + "_raw.root"; }
 std::string histos_path(const Options &opt, const Run &run) { return opt.outDir + "/" + run.runId + "_histos.root"; }
 std::string report_path(const Options &opt, const Run &run) { return opt.outDir + "/" + run.runId + ".flirt.json"; }
+
+// What the conversion report records as the build (flirt_convert.cc). ROOT's
+// version from the headers, as gROOT->GetVersion() gives ROOT_RELEASE.
+json build_identity()
+{
+    return { {"version", FLIRT_GIT_DESCRIBE}, {"mvme", MVME_GIT_DESCRIBE}, {"root", ROOT_RELEASE} };
+}
 
 std::string signal_name(int sig)
 {
@@ -496,10 +515,72 @@ void say_result(const Run &run, const Say &say)
         say(run.runId + ": to do: " + f.todo);
 }
 
+// The summary's "options".
+json options_json(const Options &opt)
+{
+    return { {"outputDir", opt.outDir}, {"jobs", opt.jobs},
+             {"ditherOffset", opt.ditherOffset},
+             {"acceptDamagedInput", opt.acceptDamagedInput} };
+}
+
+// A run in the summary's "results".
+json result_json(const Options &opt, const Run &run)
+{
+    const auto report = report_path(opt, run);
+    return { {"input", run.input}, {"runId", run.runId}, {"result", run.result},
+             {"exitCode", run.exitCode < 0 ? json(nullptr) : json(run.exitCode)},
+             {"seconds", run.seconds},
+             {"report", exists(report) ? json(report) : json(nullptr)},
+             {"note", run.note} };
+}
+
+json make_summary(const Options &opt, const std::deque<Run> &runs,
+                  const std::map<std::string, size_t> &totals, double wall, int exitCode, int stoppedBy)
+{
+    json results = json::array();
+    for (const auto &run: runs)
+    {
+        auto result = result_json(opt, run);
+        results.push_back(result);
+    }
+
+    json jtotals = { {"runs", runs.size()}, {"seconds", wall} };
+    for (const char *name: Results)
+        jtotals[name] = totals.at(name);
+
+    return {
+        {"flirt", build_identity()},
+        {"options", options_json(opt)},
+        {"results", results},
+        {"totals", jtotals},
+        {"exitCode", exitCode},
+        {"stoppedBy", stoppedBy ? json(signal_name(stoppedBy)) : json(nullptr)} };
+}
+
+// Created exclusively: never over an existing file. Invalid UTF-8 is
+// replaced (common/utf8.h).
+bool write_summary(const Options &opt, const json &summary, const Say &tell)
+{
+    const auto contents = dump_valid_utf8(summary, 2) + "\n";
+    const auto fd = open(opt.summaryPath.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (fd < 0)
+    {
+        tell("error: cannot create " + opt.summaryPath + ": " + std::strerror(errno));
+        return false;
+    }
+    bool ok = write(fd, contents.data(), contents.size()) == static_cast<ssize_t>(contents.size());
+    ok = (close(fd) == 0) && ok;
+    if (!ok)
+        tell("error: error writing " + opt.summaryPath);
+    return ok;
+}
+
 }
 
 int run_batch(int argc, char *argv[])
 {
+    const auto t0 = Clock::now();
+
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "-h" || std::string(argv[i]) == "--help")
         {
@@ -602,6 +683,7 @@ int run_batch(int argc, char *argv[])
 
     // At most opt.jobs children at a time.
     bool stopping = false;
+    int stoppedBy = 0;
     std::vector<Run *> running;
 
     auto handle_signal = [&](int sig)
@@ -609,6 +691,7 @@ int run_batch(int argc, char *argv[])
         if (sig == SIGCHLD || stopping)
             return;
         stopping = true;
+        stoppedBy = sig;
         const std::string why = sig == SIGHUP ? ", terminal closed" : sig == SIGPIPE ? ", output closed" : "";
         tell("stopping (" + signal_name(sig) + why + "): no new conversions; waiting for "
              + std::to_string(running.size()) + " running conversion(s) to end; nothing is half-published");
@@ -688,6 +771,12 @@ int run_batch(int argc, char *argv[])
         exitCode = 1;
     else if (totals["unsupported"])
         exitCode = 3;
+
+    const double wall = seconds_since(t0);
+
+    auto summary = make_summary(opt, runs, totals, wall, exitCode, stoppedBy);
+    if (!opt.summaryPath.empty() && !write_summary(opt, summary, tell) && exitCode == 0)
+        exitCode = 1;
 
     return exitCode;
 }
