@@ -15,6 +15,7 @@ add_library(flirt STATIC
     listfile_scan.cc
     run_info.cc
     library_log.cc
+    hit_flags.cc
     )
 target_include_directories(flirt PUBLIC ${CMAKE_SOURCE_DIR}/src
     ${MVME_SRC} ${MVME_EXT}/nlohmann-json)
