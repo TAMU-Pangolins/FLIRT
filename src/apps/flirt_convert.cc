@@ -163,10 +163,13 @@ void throw_if_stop_requested()
 void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <listfile.zip> -o <outdir>"
+              << " [--experiment-name <name>] [--experiment-title <title>]"
               << " [--dither-offset <N>] [--threads <T>] [--no-waveforms]"
               << " [--official-waveform-branches]"
               << " [--accept-damaged-input] [--progress-fd <N>]\n"
               << "\n"
+              << "  --experiment-name   mvme workspace setting Experiment/Name (default: Experiment)\n"
+              << "  --experiment-title  mvme workspace setting Experiment/Title (default: empty)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
               << "                      mvme_root_client --single-run (default: 0)\n"
               << "  --threads           threads for ROOT compression and waveform decoding;\n"
@@ -569,6 +572,8 @@ int convert_one(int argc, char *argv[])
         };
 
         if (arg == "-o" || arg == "--output-dir") outDir = value();
+        else if (arg == "--experiment-name") runInfo.experimentName = value();
+        else if (arg == "--experiment-title") runInfo.experimentTitle = value();
         else if (arg == "--dither-offset") rootOpts.ditherOffset = std::stoull(value());
         else if (arg == "--threads")
         {
@@ -600,7 +605,7 @@ int convert_one(int argc, char *argv[])
         else { usage(argv[0]); return 2; }
     }
 
-    if (input.empty() || outDir.empty())
+    if (input.empty() || outDir.empty() || runInfo.experimentName.empty())
     {
         usage(argv[0]);
         return 2;
@@ -873,7 +878,9 @@ int convert_one(int argc, char *argv[])
         report["analysis"] = { {"source", std::string("archive analysis.analysis")},
                                {"sha256", es::json(nullptr)},
                                {"version", analysis.version} };
-        report["options"] = { {"ditherOffset", rootOpts.ditherOffset},
+        report["options"] = { {"experimentName", runInfo.experimentName},
+                              {"experimentTitle", runInfo.experimentTitle},
+                              {"ditherOffset", rootOpts.ditherOffset},
                               {"acceptDamagedInput", acceptDamagedInput},
                               {"threads", threads}, {"noWaveforms", noWaveforms},
                               {"officialWaveformBranches", officialWaveformBranches} };

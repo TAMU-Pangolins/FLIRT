@@ -73,6 +73,7 @@ void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <input>... -o <outdir> [-j N] [--list <file>]"
               << " [--summary <file.json>]"
+              << " [--experiment-name <name>] [--experiment-title <title>]"
               << " [--dither-offset <N>] [--threads <T>] [--no-waveforms] [--official-waveform-branches]"
               << " [--accept-damaged-input] [--json-events]\n"
               << "       " << argv0 << " --watch <dir> -o <outdir> [--settle <S>] [-j N] [--summary <file.json>]"
@@ -96,6 +97,8 @@ void usage(const char *argv0)
               << "                      with # are ignored (repeatable)\n"
               << "  --summary <file>    also write the summary as JSON to this new file (exit\n"
               << "                      code 1 if it cannot be written)\n"
+              << "  --experiment-name   mvme workspace setting Experiment/Name (default: Experiment)\n"
+              << "  --experiment-title  mvme workspace setting Experiment/Title (default: empty)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
               << "                      mvme_root_client --single-run (default: 0)\n"
               << "  --threads T         threads per conversion for ROOT compression and waveform\n"
@@ -130,6 +133,7 @@ struct Options
     unsigned jobs = 1;
     unsigned threads = 1;   // per child; informational, not part of the skip rule
     std::string summaryPath;
+    std::string experimentName = "Experiment", experimentTitle;
     uint64_t ditherOffset = 0;
     bool noWaveforms = false;
     bool officialWaveformBranches = false;
@@ -294,6 +298,8 @@ Options parse_args(int argc, char *argv[])
             settleGiven = true;
         }
         else if (arg == "--summary") opt.summaryPath = value();
+        else if (arg == "--experiment-name") opt.experimentName = value();
+        else if (arg == "--experiment-title") opt.experimentTitle = value();
         else if (arg == "--dither-offset")
         {
             opt.ditherOffset = parse_number(arg, value());
@@ -327,6 +333,8 @@ Options parse_args(int argc, char *argv[])
         if (opt.inputs.empty())
             throw usage_error("no inputs", true);
     }
+    if (opt.experimentName.empty())
+        throw usage_error("--experiment-name must not be empty");
 
     struct stat st;
     if (opt.outDir.empty())
@@ -472,6 +480,8 @@ Mismatch mismatch(const Options &opt, const Run &run)
         return differs(note, "from another version of the input file", note);
     }
 
+    // The report holds the strings cleaned of invalid UTF-8 (common/utf8.h):
+    // compared cleaned to cleaned, and dumped cleaned.
     if (at("/options/ditherOffset") != json(opt.ditherOffset))
         return setting_differs("ditherOffset differs (report " + dump_valid_utf8(at("/options/ditherOffset")) + ", now "
                                + std::to_string(opt.ditherOffset) + ")",
@@ -480,6 +490,8 @@ Mismatch mismatch(const Options &opt, const Run &run)
 
     // The option, and what the block calls it.
     const std::tuple<const char *, json, const char *> options[] = {
+        { "experimentName", valid_utf8(opt.experimentName), "experiment name" },
+        { "experimentTitle", valid_utf8(opt.experimentTitle), "experiment title" },
         { "noWaveforms", opt.noWaveforms, "--no-waveforms setting" },
         { "officialWaveformBranches", opt.officialWaveformBranches, "--official-waveform-branches setting" } };
     for (const auto &[name, value, noun]: options)
@@ -649,6 +661,8 @@ bool launch(Run &run, const Options &opt, const char *argv0)
     fcntl(fd, F_SETFD, FD_CLOEXEC); // other children must not inherit it
 
     std::vector<std::string> args = { argv0, "--convert-one", run.input, "-o", opt.outDir,
+                                      "--experiment-name", opt.experimentName,
+                                      "--experiment-title", opt.experimentTitle,
                                       "--threads", std::to_string(opt.threads),
                                       "--progress-fd", "3" };
     args.insert(args.end(), { "--dither-offset", std::to_string(opt.ditherOffset) });
@@ -972,6 +986,7 @@ RunBlock block_of(const Run &run, const Options &opt)
 json options_json(const Options &opt)
 {
     return { {"outputDir", opt.outDir}, {"jobs", opt.jobs}, {"threads", opt.threads},
+             {"experimentName", opt.experimentName}, {"experimentTitle", opt.experimentTitle},
              {"ditherOffset", opt.ditherOffset},
              {"noWaveforms", opt.noWaveforms},
              {"officialWaveformBranches", opt.officialWaveformBranches},
