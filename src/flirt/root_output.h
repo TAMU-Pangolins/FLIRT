@@ -1,0 +1,74 @@
+#ifndef FLIRT_ROOT_OUTPUT_H
+#define FLIRT_ROOT_OUTPUT_H
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include <event_server/common/event_server_lib.h>
+
+#include "flirt/message_batch.h"
+
+namespace flirt
+{
+
+struct RootOutputOptions
+{
+    std::string outDir;             // existing directory receiving the outputs
+    std::string mvmePrefix;         // holds include/mvme/mvme_root_event_objects.h
+    // The listfile's run ID, for the output names and MVMERunInfo's RunID;
+    // BeginRun carries it with invalid UTF-8 replaced (extract.cc).
+    std::string runId;
+    uint64_t ditherOffset = 0;      // TRandom3(4357) draws to skip before the first value
+};
+
+struct RootOutputResult
+{
+    std::string rawFile;            // published <outDir>/<runId>_raw.root
+    std::string histosFile;         // published <outDir>/<runId>_histos.root
+    std::vector<size_t> eventHits;  // tree entries per VME event
+    size_t totalDataBytes = 0;
+};
+
+// Produces mvme_root_client's output files from event-server Messages, in this
+// process. Feed every message in order, then call close() after EndRun and
+// publish() to move the outputs into place. Outputs are written to a private
+// temporary directory inside outDir; existing files are never replaced, and
+// outputs not published are removed with the writer.
+class RootWriter
+{
+    public:
+        explicit RootWriter(const RootOutputOptions &options);
+        ~RootWriter();
+
+        void handleMessage(const mvme::event_server::Message &msg);
+        // The consumer of run_pipeline(): the messages of one batch, in order.
+        void handleBatch(const MessageBatch &batch);
+        // After EndRun: closes the output files, still in the private directory.
+        void close();
+        // After close(): links the outputs into outDir (raw, then histograms)
+        // and returns their final paths. Never over an existing file: on a
+        // failure the files linked so far are taken back and nothing stays
+        // published.
+        RootOutputResult publish();
+
+    private:
+        struct Private;
+        std::unique_ptr<Private> d;
+};
+
+// The experiment classes the client generates (user_objects*.mustache) for a
+// stream description. FLIRT only uses them in memory; exposed for tests.
+struct ExperimentCode
+{
+    std::string structName;         // ExperimentName
+    std::string headerFilename;     // <ExperimentName>_mvme.h
+    std::string header, impl, linkDef;
+};
+
+ExperimentCode render_experiment_code(const mvme::event_server::StreamInfo &streamInfo);
+
+}
+
+#endif
