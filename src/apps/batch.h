@@ -9,8 +9,9 @@ namespace flirt
 // The batch parent of flirt-convert: `flirt-convert <input>... -o <outdir> ...`.
 // Checks the arguments, skips runs already converted, refuses runs with
 // existing outputs, then converts each remaining listfile in a child process
-// (`flirt-convert --convert-one ...`), at most -j at a time. Prints a summary
-// on stdout and returns the exit code. Never initializes ROOT.
+// (`flirt-convert --convert-one ...`), at most -j at a time. Prints a block
+// per run and the end on stderr (stdout carries only --json-events) and
+// returns the exit code. Never initializes ROOT.
 int run_batch(int argc, char *argv[]);
 
 // The platform this flirt-convert was built for, "linux-x86_64" or
