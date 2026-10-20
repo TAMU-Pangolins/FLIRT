@@ -183,7 +183,7 @@ struct Run
 };
 
 const char *const Results[] = { "converted", "skipped", "outputs-exist", "failed",
-                                "unsupported", "interrupted", "not-started" };
+                                "unsupported", "interrupted", "not-started", "unfinished" };
 
 double seconds_since(Clock::time_point t0)
 {
@@ -928,11 +928,11 @@ RunBlock block_of(const Run &run, const Options &opt)
         b.attention = run.why.attention;
         return b;
     }
-    if (run.result == "not-started")
+    if (run.result == "not-started" || run.result == "unfinished")
     {
-        b.mark = "–";
-        b.tone = Tone::Plain;
-        b.outcome = "not started";
+        b.mark = run.result == "unfinished" ? "!" : "–";
+        b.tone = run.result == "unfinished" ? Tone::Warning : Tone::Plain;
+        b.outcome = run.result == "unfinished" ? "unfinished" : "not started";
         b.rest = run.note.empty() ? "" : ": " + run.note;
         b.attention = b.outcome + (run.note.empty() ? "" : ": " + run.note);
         return b;
@@ -1576,6 +1576,29 @@ int run_batch(int argc, char *argv[])
         wait_signal(wait);
     }
 
+    // The watch's files not finished at the stop, and finished ones it has
+    // not handed out yet.
+    if (opt.watch)
+    {
+        std::vector<std::string> unfinished, finished;
+        watcher->at_stop(unfinished, finished);
+        for (const auto &path: unfinished)
+        {
+            runs.emplace_back();
+            runs.back().input = path;
+            runs.back().runId = run_id_from_path(path);
+            runs.back().result = "unfinished";
+            runs.back().note = "no ZIP central directory";
+        }
+        for (const auto &path: finished)
+        {
+            runs.emplace_back();
+            runs.back().input = path;
+            runs.back().runId = run_id_from_path(path);
+            runs.back().note = "finished; the watch stopped before converting it";
+        }
+    }
+
     for (auto &run: runs)
         if (run.result.empty())
         {
@@ -1626,7 +1649,7 @@ int run_batch(int argc, char *argv[])
     const std::pair<size_t, const char *> counted[] = {
         { totals["converted"], "converted" }, { totals["skipped"], "skipped" },
         { totals["outputs-exist"] + totals["interrupted"], "not converted" }, { totals["unsupported"], "unsupported" },
-        { totals["failed"], "failed" }, { totals["not-started"], "not started" } };
+        { totals["failed"], "failed" }, { totals["not-started"], "not started" }, { totals["unfinished"], "unfinished" } };
     std::string counts;
     for (const auto &[n, word]: counted)
         if (n)
