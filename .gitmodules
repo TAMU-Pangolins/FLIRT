@@ -1,0 +1,6 @@
+[submodule "external/mvme"]
+	path = external/mvme
+	url = https://github.com/flueke/mvme.git
+[submodule "external/FTXUI"]
+	path = external/FTXUI
+	url = https://github.com/ArthurSonzogni/FTXUI.git
