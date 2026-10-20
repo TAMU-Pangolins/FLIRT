@@ -584,6 +584,10 @@ RootWriter::RootWriter(const RootOutputOptions &options)
     // First, before any other ROOT use (TROOT.h).
     if (options.threadSafety)
         ROOT::EnableThreadSafety();
+    // Before any ROOT file exists. The compression settings are unchanged; the
+    // layout was identical with 2, 4 and 8 threads (docs/design.md, "Threads").
+    if (options.implicitMTThreads > 1)
+        ROOT::EnableImplicitMT(options.implicitMTThreads);
     gROOT->SetBatch(true);
 }
 

@@ -23,12 +23,28 @@ struct RunInfo
     std::string listfileLogBuffer; // "messages.log" contents
 };
 
+// Which of the analysis data sources an Extractor runs.
+enum class SourceSet
+{
+    All,        // every source: the messages mvme's EventServer sends; traces
+    Written,    // every source but the MDPP sample decoders; no traces
+    Waveforms,  // the MDPP sample decoders only; traces
+};
+
 // Runs the analysis data sources (liba2) on parsed readout events and encodes
 // the results exactly as mvme's EventServer does, as protocol Messages.
+//
+// An Extractor for a subset of the sources emits a partial message for exactly
+// the events the full one emits a message for. It holds only the subset's
+// data-source segments, with their original dsIndex; merge() interleaves a
+// Written and a Waveforms partial message into the full message. Descriptions
+// and BeginRun always describe all sources. Every source keeps its configured
+// rngSeed, so a source's values do not depend on the set it runs in.
 class Extractor
 {
     public:
-        Extractor(const VMEConfig &vmeConfig, const AnalysisConfig &analysis);
+        Extractor(const VMEConfig &vmeConfig, const AnalysisConfig &analysis,
+                  SourceSet sources = SourceSet::All);
         ~Extractor();
 
         // BeginRun message (EventServer::beginRun, event_server.cc:419-474).
@@ -37,8 +53,8 @@ class Extractor
         // Processes one parsed readout event. Returns false if EventServer
         // would not send an EventData message for it (event_server.cc:506-507).
         //
-        // traces, if given, receives the event's waveform traces: for every
-        // tree module (AnalysisConfig::waveformModules)
+        // traces, if given, receives the event's waveform traces, except for
+        // SourceSet::Written: for every tree module (AnalysisConfig::waveformModules)
         // the decoded event of its reused analysis decoder (reused_decoder(),
         // as a2 moved it into the source's shared event) or of FLIRT's own
         // call of mvme's decoder on the same module data; and, marked
@@ -50,6 +66,12 @@ class Extractor
                           unsigned moduleCount,
                           mvme::event_server::Message &out,
                           EventTraces *traces = nullptr);
+
+        // The message the full Extractor produces, from the partial messages
+        // of a Written and a Waveforms Extractor for the same event.
+        void merge(const mvme::event_server::Message &written,
+                   const mvme::event_server::Message &waveforms,
+                   mvme::event_server::Message &out) const;
 
         // EndRun message; mvme's EndRun info is informational only.
         mvme::event_server::Message endRunMessage() const;

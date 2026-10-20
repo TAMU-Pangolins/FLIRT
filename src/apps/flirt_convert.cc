@@ -160,10 +160,15 @@ void throw_if_stop_requested()
 void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <listfile.zip> -o <outdir>"
-              << " [--dither-offset <N>] [--accept-damaged-input] [--progress-fd <N>]\n"
+              << " [--dither-offset <N>] [--threads <T>]"
+              << " [--accept-damaged-input] [--progress-fd <N>]\n"
               << "\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
               << "                      mvme_root_client --single-run (default: 0)\n"
+              << "  --threads           threads for ROOT compression and waveform decoding;\n"
+              << "                      with 1, 2, 4 and 8 compare finds the output IDENTICAL\n"
+              << "                      (tested; the bytes on disk can differ)\n"
+              << "                      (default: 1)\n"
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
@@ -498,6 +503,7 @@ int convert_one(int argc, char *argv[])
     std::string input, outDir;
     bool acceptDamagedInput = false;
     bool published = false;
+    unsigned threads = 1;
     int progressFd = -1;
     flirt::RunInfo runInfo;
     flirt::RootOutputOptions rootOpts;
@@ -512,6 +518,17 @@ int convert_one(int argc, char *argv[])
 
         if (arg == "-o" || arg == "--output-dir") outDir = value();
         else if (arg == "--dither-offset") rootOpts.ditherOffset = std::stoull(value());
+        else if (arg == "--threads")
+        {
+            const auto text = value();
+            if (text.empty() || text.size() > 4 || !std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isdigit(c); })
+                || std::stoul(text) < 1)
+            {
+                usage(argv[0]);
+                return 2;
+            }
+            threads = static_cast<unsigned>(std::stoul(text));
+        }
         else if (arg == "--progress-fd")
         {
             const auto text = value();
@@ -654,6 +671,7 @@ int convert_one(int argc, char *argv[])
         rootOpts.outDir = outDir;
         rootOpts.runId = listfile.runId;
         rootOpts.mvmePrefix = own_prefix();
+        rootOpts.implicitMTThreads = threads;
         // The waveform writer writes its own file in its own thread.
         rootOpts.threadSafety = writeWaveforms;
 
@@ -693,6 +711,9 @@ int convert_one(int argc, char *argv[])
                                              writer.handleBatch(batch);
                                          });
 
+            // The waveform sources and FLIRT's decoders may run in parallel;
+            // all other sources stay on the producer thread (pipeline.h).
+            const unsigned waveformThreads = hasWaveformSources || writeWaveforms ? threads : 0;
             ProgressWriter progress(progressFd);
             pipeline = flirt::run_pipeline(listfile, vmeConfig, analysis, runInfo,
                                            [&](flirt::MessageBatch &batch)
@@ -703,7 +724,7 @@ int convert_one(int argc, char *argv[])
                                                                waveforms.get(), otherTraces);
                                                consumer.push(batch);
                                            },
-                                           collectTraces,
+                                           waveformThreads, collectTraces,
                                            progressFd < 0 ? flirt::ProgressFn() :
                                            [&](uint64_t processed, uint64_t total)
                                            {
@@ -776,7 +797,8 @@ int convert_one(int argc, char *argv[])
                                {"sha256", es::json(nullptr)},
                                {"version", analysis.version} };
         report["options"] = { {"ditherOffset", rootOpts.ditherOffset},
-                              {"acceptDamagedInput", acceptDamagedInput} };
+                              {"acceptDamagedInput", acceptDamagedInput},
+                              {"threads", threads} };
         report["output"] = { {"raw", output.rawFile}, {"histos", output.histosFile},
                              {"rawBytes", static_cast<int64_t>(output.rawBytes)},
                              {"histosBytes", static_cast<int64_t>(output.histosBytes)},

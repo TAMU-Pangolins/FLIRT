@@ -54,15 +54,27 @@ using ProgressFn = std::function<void (uint64_t bytesProcessed, uint64_t bytesTo
 // extractor. Hands the sink BeginRun, then the EventData messages of each
 // readout buffer, then EndRun. Uses no ROOT and no gRandom.
 //
+// waveformThreads > 0, if the analysis has MDPP sample decoder sources or,
+// with collectTraces, tree modules (AnalysisConfig::waveformModules):
+// those sources and FLIRT's decoders run on that many worker threads, each
+// with its own Waveforms Extractor, one job per readout buffer, while this
+// thread runs every other source on every event in order (their values depend
+// on their sources' sequential random streams). The results are merged and
+// delivered in buffer order, one batch per buffer, as with 0. Only the
+// waveform sources' a2 values (sample + random, a2.cc:892) can differ from the
+// sequential path; the event server sends only their channel-0 samples
+// (event_server.cc:537) and floors them (:567-570) to the integer samples, so
+// the messages are the same on both paths.
+//
 // collectTraces: every EventData message carries its waveform traces in the
-// batch (MessageBatch::traces). The traces are the decoder's output, before
-// any random is added.
+// batch (MessageBatch::traces), on both paths. The traces are the decoder's
+// output, before any random is added, so they do not depend on the path.
 //
 // progress: see ProgressFn; empty for none.
 PipelineResult run_pipeline(const ListfileInfo &listfile, const VMEConfig &vmeConfig,
                             const AnalysisConfig &analysis, const RunInfo &runInfo,
-                            const BatchSink &sink, bool collectTraces = false,
-                            const ProgressFn &progress = {});
+                            const BatchSink &sink, unsigned waveformThreads = 0,
+                            bool collectTraces = false, const ProgressFn &progress = {});
 
 // True if the analysis has MDPP sample decoder (waveform) sources.
 bool has_waveform_sources(const AnalysisConfig &analysis);

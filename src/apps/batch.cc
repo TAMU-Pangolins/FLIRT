@@ -66,7 +66,7 @@ void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <input>... -o <outdir> [-j N] [--list <file>]"
               << " [--summary <file.json>]"
-              << " [--dither-offset <N>]"
+              << " [--dither-offset <N>] [--threads <T>]"
               << " [--accept-damaged-input] [--json-events]\n"
               << "\n"
               << "Converts mvme MVLC listfile archives into <runId>_raw.root, <runId>_histos.root,\n"
@@ -89,6 +89,10 @@ void usage(const char *argv0)
               << "                      code 1 if it cannot be written)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
               << "                      mvme_root_client --single-run (default: 0)\n"
+              << "  --threads T         threads per conversion for ROOT compression and waveform\n"
+              << "                      decoding; with 1, 2, 4 and 8 threads compare finds the\n"
+              << "                      outputs IDENTICAL (tested; the bytes on disk can differ)\n"
+              << "                      (default: 1)\n"
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
@@ -105,6 +109,7 @@ struct Options
     std::vector<std::string> inputs;
     std::string outDir;
     unsigned jobs = 1;
+    unsigned threads = 1;   // per child; informational, not part of the skip rule
     std::string summaryPath;
     uint64_t ditherOffset = 0;
     bool acceptDamagedInput = false;
@@ -238,6 +243,13 @@ Options parse_args(int argc, char *argv[])
             if (jobs < 1 || jobs > 1024)
                 throw usage_error("-j must be between 1 and 1024");
             opt.jobs = static_cast<unsigned>(jobs);
+        }
+        else if (arg == "--threads")
+        {
+            auto threads = parse_number(arg, value());
+            if (threads < 1 || threads > 1024)
+                throw usage_error("--threads must be between 1 and 1024");
+            opt.threads = static_cast<unsigned>(threads);
         }
         else if (arg == "--list") sources.emplace_back(true, value());
         else if (arg == "--summary") opt.summaryPath = value();
@@ -552,6 +564,7 @@ bool launch(Run &run, const Options &opt, const char *argv0)
     fcntl(fd, F_SETFD, FD_CLOEXEC); // other children must not inherit it
 
     std::vector<std::string> args = { argv0, "--convert-one", run.input, "-o", opt.outDir,
+                                      "--threads", std::to_string(opt.threads),
                                       "--progress-fd", "3" };
     args.insert(args.end(), { "--dither-offset", std::to_string(opt.ditherOffset) });
     if (opt.acceptDamagedInput)
@@ -869,7 +882,7 @@ RunBlock block_of(const Run &run, const Options &opt)
 // The summary's "options" (also the --json-events start event's).
 json options_json(const Options &opt)
 {
-    return { {"outputDir", opt.outDir}, {"jobs", opt.jobs},
+    return { {"outputDir", opt.outDir}, {"jobs", opt.jobs}, {"threads", opt.threads},
              {"ditherOffset", opt.ditherOffset},
              {"acceptDamagedInput", opt.acceptDamagedInput} };
 }

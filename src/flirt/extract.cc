@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <deque>
 #include <stdexcept>
 
@@ -44,10 +45,17 @@ using SampleEvents = std::deque<mesytec::mvlc::Protected<
 // decoder source, in dsIndex order.
 using SampleSlots = std::vector<std::vector<std::pair<size_t, size_t>>>;
 
+bool in_set(SourceSet set, const DataSourceConfig &src)
+{
+    const bool waveform = (src.kind == DataSourceConfig::Kind::MdppSampleDecoder);
+    return set == SourceSet::All || waveform == (set == SourceSet::Waveforms);
+}
+
 // a2_adapter_build / a2_adapter_build_datasources (a2_adapter.cc:1643-1680,
-// 1194-1296): one DataSource per configured source, in a2 order. dsIndexes
-// receives, per event, the original index of each a2 data source.
-a2::A2 *build_a2(memory::Arena &arena, const AnalysisConfig &analysis,
+// 1194-1296): one DataSource per configured source, in a2 order; here only the
+// sources in `set`. dsIndexes receives, per event, the original index of each
+// a2 data source.
+a2::A2 *build_a2(memory::Arena &arena, const AnalysisConfig &analysis, SourceSet set,
                  SampleEvents &sampleEvents, std::vector<std::vector<u32>> &dsIndexes,
                  SampleSlots &sampleSlots)
 {
@@ -58,11 +66,16 @@ a2::A2 *build_a2(memory::Arena &arena, const AnalysisConfig &analysis,
     for (size_t ei = 0; ei < analysis.dataSources.size(); ++ei)
     {
         const auto &sources = analysis.dataSources[ei];
-        a2->dataSources[ei] = arena.pushArray<a2::DataSource>(sources.size());
+        const auto count = std::count_if(sources.begin(), sources.end(),
+                                         [set](const DataSourceConfig &src) { return in_set(set, src); });
+        a2->dataSources[ei] = arena.pushArray<a2::DataSource>(count);
 
         for (size_t dsIndex = 0; dsIndex < sources.size(); ++dsIndex)
         {
             const auto &src = sources[dsIndex];
+            if (!in_set(set, src))
+                continue;
+
             a2::DataSource ds = {};
 
             switch (src.kind)
@@ -159,8 +172,8 @@ struct Extractor::Private
     struct TraceSlot { int moduleIndex; size_t sampleEvent; bool inFile; };
     std::vector<std::vector<TraceSlot>> traceSlots;
     // FLIRT's own decoders, per event, for the tree modules without a reused
-    // analysis decoder: not a2 data sources; only run when traces are
-    // collected.
+    // analysis decoder: not a2 data sources; only for SourceSet::All and
+    // Waveforms, and only run when traces are collected.
     struct FlirtDecoder
     {
         int moduleIndex;
@@ -175,10 +188,10 @@ struct Extractor::Private
     std::vector<uint8_t> outBuf = std::vector<uint8_t>(10 * 1024); // event_server.cc:68
 };
 
-Extractor::Extractor(const VMEConfig &vmeConfig, const AnalysisConfig &analysis)
+Extractor::Extractor(const VMEConfig &vmeConfig, const AnalysisConfig &analysis, SourceSet sources)
     : d(std::make_unique<Private>())
 {
-    d->a2 = build_a2(d->arena, analysis, d->sampleEvents, d->dsIndexes, d->sampleSlots);
+    d->a2 = build_a2(d->arena, analysis, sources, d->sampleEvents, d->dsIndexes, d->sampleSlots);
     a2::a2_begin_run(d->a2, {});
 
     for (const auto &event: vmeConfig.events)
@@ -188,7 +201,7 @@ Extractor::Extractor(const VMEConfig &vmeConfig, const AnalysisConfig &analysis)
     // the other modules, whose traces are only counted.
     d->traceSlots.resize(vmeConfig.events.size());
     d->flirtDecoders.resize(vmeConfig.events.size());
-    for (size_t ei = 0; ei < d->sampleSlots.size(); ++ei)
+    for (size_t ei = 0; sources != SourceSet::Written && ei < d->sampleSlots.size(); ++ei)
     {
         const auto &eventSources = analysis.dataSources[ei];
         auto slot_of = [&](const DataSourceConfig *src)
@@ -244,7 +257,21 @@ Extractor::Extractor(const VMEConfig &vmeConfig, const AnalysisConfig &analysis)
         d->vmeTree.events.push_back(vmeEvent);
     }
 
-    d->edds = describe(d->a2, vmeConfig, analysis);
+    // The descriptions always cover all sources. A subset Extractor takes them
+    // from a full a2 built only for this; a source's description does not
+    // depend on the other sources.
+    if (sources == SourceSet::All)
+        d->edds = describe(d->a2, vmeConfig, analysis);
+    else
+    {
+        memory::Arena arena;
+        SampleEvents sampleEvents;
+        std::vector<std::vector<u32>> dsIndexes;
+        SampleSlots sampleSlots;
+        auto full = build_a2(arena, analysis, SourceSet::All, sampleEvents, dsIndexes, sampleSlots);
+        d->edds = describe(full, vmeConfig, analysis);
+        full->~A2();
+    }
 }
 
 Extractor::~Extractor()
@@ -355,7 +382,8 @@ bool Extractor::processEvent(int eventIndex, const parser::ModuleData *moduleDat
             traces->push_back({ fd.moduleIndex, std::move(fd.decoded), true });
 
     // EventServer::endEvent (event_server.cc:478-632). The message is sent if
-    // the event has data sources (:500-507).
+    // the event has data sources (:500-507); a subset Extractor decides by all
+    // of them, so its partial messages match the full Extractor's messages.
     const auto &edd = d->edds[eventIndex];
 
     if (edd.dataSources.empty())
@@ -372,7 +400,7 @@ bool Extractor::processEvent(int eventIndex, const parser::ModuleData *moduleDat
 
             for (u32 a2Index = 0; a2Index < a2Count; ++a2Index)
             {
-                const u32 dsIndex = d->dsIndexes[eventIndex][a2Index];
+                const u32 dsIndex = d->dsIndexes[eventIndex][a2Index]; // a2Index for SourceSet::All
                 buf.push(static_cast<u8>(dsIndex));
                 u16 *countPtr = buf.push(static_cast<u16>(0u));
 
@@ -426,6 +454,60 @@ bool Extractor::processEvent(int eventIndex, const parser::ModuleData *moduleDat
             d->outBuf.resize(d->outBuf.size() * 2); // event_server.cc:609-616
         }
     }
+}
+
+void Extractor::merge(const es::Message &written, const es::Message &waveforms, es::Message &out) const
+{
+    // A partial message: u8 eventIndex, then per data source u8 dsIndex,
+    // u16 count and count (index, value) entries, as processEvent() encodes them.
+    struct Reader
+    {
+        const std::vector<uint8_t> &bytes;
+        size_t pos = 1;
+
+        bool atEnd() const { return pos == bytes.size(); }
+        u8 dsIndex() const { return bytes[pos]; }
+    };
+
+    if (written.contents.empty() || waveforms.contents.empty()
+        || written.contents[0] != waveforms.contents[0]
+        || written.contents[0] >= d->edds.size())
+        throw std::logic_error("merge: partial messages of different events");
+
+    const auto &edd = d->edds[written.contents[0]];
+    Reader readers[2] = { { written.contents }, { waveforms.contents } };
+
+    out.type = es::MessageType::EventData;
+    out.contents.resize(written.contents.size() + waveforms.contents.size() - 1);
+    out.contents[0] = written.contents[0];
+    size_t outPos = 1;
+
+    for (size_t dsIndex = 0; dsIndex < edd.dataSources.size(); ++dsIndex)
+    {
+        Reader *r = nullptr;
+        for (auto &candidate: readers)
+            if (!candidate.atEnd() && candidate.dsIndex() == dsIndex)
+                r = &candidate;
+
+        if (!r || r->pos + 3 > r->bytes.size())
+            throw std::logic_error("merge: data source " + std::to_string(dsIndex) + " missing");
+
+        u16 count;
+        std::memcpy(&count, r->bytes.data() + r->pos + 1, sizeof(count));
+        const auto &dsd = edd.dataSources[dsIndex];
+        const size_t size = 3 + count * (es::get_storage_type_size(dsd.indexType)
+                                         + es::get_storage_type_size(dsd.valueType));
+
+        if (r->pos + size > r->bytes.size())
+            throw std::logic_error("merge: data source " + std::to_string(dsIndex) + " truncated");
+
+        std::memcpy(out.contents.data() + outPos, r->bytes.data() + r->pos, size);
+        outPos += size;
+        r->pos += size;
+    }
+
+    if (!readers[0].atEnd() || !readers[1].atEnd() || outPos != out.contents.size())
+        throw std::logic_error("merge: unexpected data in a partial message");
 }
 
 }
