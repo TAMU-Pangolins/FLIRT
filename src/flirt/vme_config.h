@@ -44,6 +44,12 @@ struct VMEConfig
 // rather than converted. Module metas are looked up in the given templates.
 VMEConfig parse_vme_config(const std::string &json, const std::vector<ModuleMeta> &templates);
 
+// Refuses (unsupported_input) a config with more than one VME event that
+// reads out data, i.e. has an enabled module: conversions were verified with
+// one VME event only (docs/design.md, "Several VME events"). A config
+// is not refused for events without an enabled module.
+void refuse_several_events(const VMEConfig &config);
+
 // mvme's parser module index -> VME config module index map for one event:
 // enabled modules only, in order (vme_analysis_common.cc:444-469).
 std::vector<int> make_module_index_map(const EventConfig &event);

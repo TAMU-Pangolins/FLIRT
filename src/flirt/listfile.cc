@@ -133,6 +133,13 @@ ListfileInfo read_listfile_info(const std::string &archivePath)
         throw unsupported_input("classic .mvmelst listfiles are not supported (MVLC only): "
                                 + result.listfileEntry);
 
+    // The ZIP layer's CRC-32 covers the LZ4 frames, not the data the reader
+    // delivers, so the listfile cannot be verified (docs/design.md, "Input
+    // integrity, strict by default").
+    if (ends_with(result.listfileEntry, ".lz4"))
+        throw unsupported_input("LZ4-compressed listfiles are not supported: their integrity cannot"
+                                " be verified at the ZIP layer (" + result.listfileEntry + ")");
+
     result.analysisJson = read_entry(zip, "analysis.analysis", result.analysisEntry);
 
     // The preamble is read again, and CRC-checked, by the replay (I2); read

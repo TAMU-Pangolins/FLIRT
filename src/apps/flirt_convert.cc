@@ -219,6 +219,7 @@ int convert_one(int argc, char *argv[])
                    + " entries in the central directory");
 
         auto vmeConfig = flirt::parse_vme_config(listfile.vmeConfigJson, templates);
+        flirt::refuse_several_events(vmeConfig);
 
         // I3: analysis.analysis is always checked, but only fails the
         // conversion if it is the analysis in use.

@@ -78,6 +78,21 @@ VMEConfig parse_vme_config(const std::string &json, const std::vector<ModuleMeta
     return result;
 }
 
+void refuse_several_events(const VMEConfig &config)
+{
+    std::vector<std::string> withData;
+    for (const auto &event: config.events)
+        if (!make_module_index_map(event).empty())
+            withData.push_back("'" + event.name.toStdString() + "'");
+    if (withData.size() <= 1)
+        return;
+    std::string names;
+    for (size_t i = 0; i < withData.size(); ++i)
+        names += (i == 0 ? "" : i + 1 == withData.size() ? " and " : ", ") + withData[i];
+    throw unsupported_input("the VME config has " + std::to_string(withData.size()) + " events that read out data ("
+                            + names + "); FLIRT converts runs with one VME event only, so far");
+}
+
 std::vector<int> make_module_index_map(const EventConfig &event)
 {
     std::vector<int> result;
