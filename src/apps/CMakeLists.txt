@@ -14,3 +14,11 @@ endif()
 set_target_properties(flirt-convert PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${FLIRT_PREFIX}/bin
     BUILD_RPATH "${FLIRT_CONVERT_RPATH}")
+
+# flirt-info: what listfiles record about their runs, without converting
+# them. The flirt library only: no ROOT.
+add_executable(flirt-info flirt_info.cc)
+target_link_libraries(flirt-info PRIVATE flirt)
+target_compile_options(flirt-info PRIVATE -Wall -Wextra)
+add_dependencies(flirt-info mvme_templates)
+set_target_properties(flirt-info PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${FLIRT_PREFIX}/bin)

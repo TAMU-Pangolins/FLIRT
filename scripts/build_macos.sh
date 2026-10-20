@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds FLIRT natively on macOS (Apple silicon) into build/macos:
 #   scripts/build_macos.sh [extra cmake arguments]
-# The programs are then build/macos/prefix/bin/flirt-convert;
+# The programs are then build/macos/prefix/bin/flirt-convert and flirt-info;
 # then tools/compare into build/macos-<tool>.
 # Needs Xcode's command line tools, Homebrew's cmake, ninja, qt@5 and boost,
 # and ROOT 6 (root-config on PATH, or ROOTSYS set). Installs nothing itself.
@@ -42,7 +42,7 @@ cmake -S "$repo" -B "$repo/build/macos" -G Ninja -Wno-dev \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_PREFIX_PATH="$qt;$boost" "$@"
 ninja -C "$repo/build/macos"
-echo "built: $repo/build/macos/prefix/bin/flirt-convert"
+echo "built: $repo/build/macos/prefix/bin/flirt-convert, flirt-info"
 
 # The checking tools (ROOT only, no FLIRT code), each in build/macos-<tool>.
 for tool in compare; do

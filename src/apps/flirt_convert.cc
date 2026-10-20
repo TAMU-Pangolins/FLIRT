@@ -923,7 +923,7 @@ int convert_one(int argc, char *argv[])
                              {"ethPacketsProcessed", pc.ethPacketsProcessed},
                              {"ethPacketLoss", pc.ethPacketLoss}, {"internalBufferLoss", pc.internalBufferLoss} };
 
-        // report["run"] (run_info.h).
+        // report["run"], built as flirt-info builds it (run_info.h).
         const auto runFacts = flirt::run_facts(listfile, pc, pipeline.run);
         report["run"] = flirt::run_json(runFacts, vmeConfig);
 

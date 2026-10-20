@@ -2,8 +2,9 @@
 #define FLIRT_RUN_INFO_H
 
 // What the listfile records about the run itself, as flirt-convert's
-// report["run"] shows it: run times, counts, packet loss, the rate over time,
-// messages.log's facts and the settings changes.
+// report["run"] and flirt-info show it: run times, counts, packet loss, the
+// rate over time, messages.log's facts and the settings changes. One builder,
+// so both programs show the same object.
 
 #include <mesytec-mvlc/mvlc_constants.h>
 #include <mesytec-mvlc/mvlc_readout_parser.h>
