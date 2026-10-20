@@ -5,6 +5,7 @@
 #include <map>
 
 #include "common/failures.h"
+#include "flirt/hit_flags.h"
 #include "flirt/run_info.h"
 #include "flirt/run_summary.h"
 #include "flirt/settings_changes.h"
@@ -237,6 +238,8 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
     std::string files = "_raw.root   _histos.root";
     if (at(report, "/output/waveforms").is_string())
         files += "   _waveforms.root";
+    if (at(report, "/output/hitFlagsAnalysis").is_string())
+        files += "   _hit_flags.analysis";
     row("files", files + "   .flirt.json");
 
     if (const auto lost = loss_block_text(facts); !lost.empty())
@@ -245,6 +248,13 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
     {
         row("quality", quality);
         b.quality = true;
+    }
+    // --extract-hit-flags: the counts (hit_flags.h), after "hit flags: ".
+    const auto hitFlags = at(report, "/hitFlags");
+    if (hitFlags.is_object() && hitFlags.value("enabled", false))
+    {
+        const auto line = hit_flags_line(hitFlags);
+        row("flags", starts_with(line, "hit flags: ") ? line.substr(11) : line);
     }
 
     // The notes, then the warnings, in the order flirt-convert's child prints them.

@@ -75,7 +75,7 @@ void usage(const char *argv0)
               << " [--summary <file.json>] [--analysis <file.analysis> | --default-filters]"
               << " [--experiment-name <name>] [--experiment-title <title>]"
               << " [--dither-offset <N>] [--threads <T>] [--no-waveforms] [--official-waveform-branches]"
-              << " [--accept-damaged-input] [--json-events]\n"
+              << " [--extract-hit-flags] [--accept-damaged-input] [--json-events]\n"
               << "       " << argv0 << " <listfile.zip> -o <outdir> --dither-offset-from <official _raw.root>"
               << " [the conversion options above]\n"
               << "       " << argv0 << " --watch <dir> -o <outdir> [--settle <S>] [-j N] [--summary <file.json>]"
@@ -122,6 +122,11 @@ void usage(const char *argv0)
               << "  --official-waveform-branches\n"
               << "                      write the analysis's waveform sources into _raw.root and\n"
               << "                      _histos.root as mvme does (channel 0, 8 bits)\n"
+              << "  --extract-hit-flags add a flag column for each MDPP amplitude (0 clean,\n"
+              << "                      1 over/underflow, 2 pile-up, 3 both; QDC: 1 overflow) and\n"
+              << "                      write <runId>_hit_flags.analysis, with which official mvme\n"
+              << "                      makes the identical files; every value's random part then\n"
+              << "                      differs from files made without this option\n"
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
@@ -154,6 +159,7 @@ struct Options
     bool noWaveforms = false;
     bool defaultFilters = false;
     bool officialWaveformBranches = false;
+    bool extractHitFlags = false;
     bool acceptDamagedInput = false;
     bool jsonEvents = false;    // --json-events: stdout carries JSON events only
     bool watch = false;     // --watch: watchDir instead of inputs
@@ -347,6 +353,7 @@ Options parse_args(int argc, char *argv[])
         else if (arg == "--no-waveforms") opt.noWaveforms = true;
         else if (arg == "--default-filters") opt.defaultFilters = true;
         else if (arg == "--official-waveform-branches") opt.officialWaveformBranches = true;
+        else if (arg == "--extract-hit-flags") opt.extractHitFlags = true;
         else if (arg == "--json-events") opt.jsonEvents = true;
         else if (!arg.empty() && arg[0] == '-') throw usage_error("unknown option " + arg, true);
         else sources.emplace_back(false, arg);
@@ -448,6 +455,7 @@ std::string raw_path(const Options &opt, const Run &run) { return opt.outDir + "
 std::string histos_path(const Options &opt, const Run &run) { return opt.outDir + "/" + run.runId + "_histos.root"; }
 std::string report_path(const Options &opt, const Run &run) { return opt.outDir + "/" + run.runId + ".flirt.json"; }
 std::string waveforms_path(const Options &opt, const Run &run) { return opt.outDir + "/" + run.runId + "_waveforms.root"; }
+std::string hit_flags_path(const Options &opt, const Run &run) { return opt.outDir + "/" + run.runId + "_hit_flags.analysis"; }
 
 // What the conversion report records as the build (flirt_convert.cc). ROOT's
 // version from the headers, as gROOT->GetVersion() gives ROOT_RELEASE.
@@ -591,7 +599,8 @@ Mismatch mismatch(const Options &opt, const Run &run)
         { "experimentTitle", valid_utf8(opt.experimentTitle), "experiment title" },
         { "noWaveforms", opt.noWaveforms, "--no-waveforms setting" },
         { "defaultFilters", opt.defaultFilters, "--default-filters setting" },
-        { "officialWaveformBranches", opt.officialWaveformBranches, "--official-waveform-branches setting" } };
+        { "officialWaveformBranches", opt.officialWaveformBranches, "--official-waveform-branches setting" },
+        { "extractHitFlags", opt.extractHitFlags, "--extract-hit-flags setting" } };
     for (const auto &[name, value, noun]: options)
     {
         const auto recorded = at(("/options/" + std::string(name)).c_str());
@@ -628,6 +637,18 @@ Mismatch mismatch(const Options &opt, const Run &run)
     }
     else if (exists(waveforms))
         return files_differ(waveforms, "exists but the report records none");
+
+    // The edited analysis of --extract-hit-flags, likewise.
+    const auto hitFlags = hit_flags_path(opt, run);
+    if (!at("/output/hitFlagsAnalysisBytes").is_null())
+    {
+        if (stat(hitFlags.c_str(), &st) != 0)
+            return files_differ(hitFlags, "is missing");
+        if (at("/output/hitFlagsAnalysisBytes") != json(static_cast<int64_t>(st.st_size)))
+            return files_differ(hitFlags, "size differs from the report's");
+    }
+    else if (exists(hitFlags))
+        return files_differ(hitFlags, "exists but the report records none");
     return {};
 }
 
@@ -772,6 +793,8 @@ bool launch(Run &run, const Options &opt, const char *argv0)
         args.push_back("--default-filters");
     if (opt.officialWaveformBranches)
         args.push_back("--official-waveform-branches");
+    if (opt.extractHitFlags)
+        args.push_back("--extract-hit-flags");
     if (!opt.analysisFile.empty())
         args.insert(args.end(), { "--analysis", opt.analysisFile });
     if (opt.acceptDamagedInput)
@@ -925,7 +948,8 @@ void finish(Run &run, int status, bool stopping, const Options &opt, const Say &
         {
         }
         std::vector<std::string> present;
-        for (const auto &path: { raw_path(opt, run), histos_path(opt, run), waveforms_path(opt, run) })
+        for (const auto &path: { raw_path(opt, run), histos_path(opt, run), waveforms_path(opt, run),
+                                 hit_flags_path(opt, run) })
             if (exists(path))
                 present.push_back(path.substr(path.rfind('/') + 1));
         if (!report.empty())
@@ -1039,7 +1063,7 @@ RunBlock block_of(const Run &run, const Options &opt)
         // Only the run's files that are there, by their endings.
         std::vector<std::string> present;
         for (const auto &path: { raw_path(opt, run), histos_path(opt, run), waveforms_path(opt, run),
-                                 report_path(opt, run) })
+                                 hit_flags_path(opt, run), report_path(opt, run) })
             if (exists(path))
                 present.push_back(path.substr(opt.outDir.size() + 1 + run.runId.size()));
         row("to do", "delete " + listed(present) + " of this run to convert it again");
@@ -1098,6 +1122,7 @@ json options_json(const Options &opt)
              {"noWaveforms", opt.noWaveforms},
              {"defaultFilters", opt.defaultFilters},
              {"officialWaveformBranches", opt.officialWaveformBranches},
+             {"extractHitFlags", opt.extractHitFlags},
              {"acceptDamagedInput", opt.acceptDamagedInput},
              {"watch", opt.watch ? json(opt.watchDir) : json(nullptr)},
              {"settleSeconds", opt.watch ? json(opt.settleSeconds) : json(nullptr)} };
@@ -1117,16 +1142,42 @@ json result_json(const Options &opt, const Run &run)
 json make_summary(const Options &opt, const std::deque<Run> &runs,
                   const std::map<std::string, size_t> &totals, double wall, int exitCode, int stoppedBy)
 {
+    // --extract-hit-flags: each run's flag totals from its report (null if
+    // it has none), and their sum.
     json results = json::array();
+    json hitFlags = { {"hits", 0}, {"pileUp", 0}, {"overUnderflow", 0}, {"both", 0}, {"overflow", 0} };
     for (const auto &run: runs)
     {
         auto result = result_json(opt, run);
+        if (opt.extractHitFlags)
+        {
+            json counts;
+            try
+            {
+                std::ifstream in(report_path(opt, run));
+                if (in && (run.result == "converted" || run.result == "skipped"))
+                {
+                    const auto t = json::parse(in).at("hitFlags").at("totals");
+                    for (auto it = hitFlags.begin(); it != hitFlags.end(); ++it)
+                        counts[it.key()] = t.at(it.key()).get<uint64_t>();
+                    for (auto it = hitFlags.begin(); it != hitFlags.end(); ++it)
+                        it.value() = it.value().get<uint64_t>() + counts[it.key()].get<uint64_t>();
+                }
+            }
+            catch (const std::exception &)
+            {
+                counts = nullptr;
+            }
+            result["hitFlags"] = counts;
+        }
         results.push_back(result);
     }
 
     json jtotals = { {"runs", runs.size()}, {"seconds", wall} };
     for (const char *name: Results)
         jtotals[name] = totals.at(name);
+    if (opt.extractHitFlags)
+        jtotals["hitFlags"] = hitFlags;
 
     return {
         {"flirt", build_identity()},
@@ -1334,7 +1385,7 @@ int run_batch(int argc, char *argv[])
         }
 
         const std::string outputs[] = { raw_path(opt, run), histos_path(opt, run), waveforms_path(opt, run),
-                                        report_path(opt, run) };
+                                        hit_flags_path(opt, run), report_path(opt, run) };
         struct stat st;
         run.bytes = stat(run.input.c_str(), &st) == 0 ? static_cast<uint64_t>(st.st_size) : 0;
         if (std::none_of(std::begin(outputs), std::end(outputs), exists))

@@ -43,6 +43,7 @@
 #include "common/utf8.h"
 #include "flirt/analysis_config.h"
 #include "flirt/default_filters.h"
+#include "flirt/hit_flags.h"
 #include "flirt/integrity.h"
 #include "flirt/listfile.h"
 #include "flirt/module_templates.h"
@@ -172,7 +173,7 @@ void usage(const char *argv0)
               << " [--experiment-name <name>] [--experiment-title <title>]"
               << " [--dither-offset <N> | --dither-offset-from <official _raw.root>] [--threads <T>] [--no-waveforms]"
               << " [--official-waveform-branches]"
-              << " [--accept-damaged-input] [--progress-fd <N>]\n"
+              << " [--extract-hit-flags] [--accept-damaged-input] [--progress-fd <N>]\n"
               << "\n"
               << "  --analysis          use this mvme analysis instead of the one in the archive\n"
               << "  --default-filters   use the analysis mvme's \"Generate default filters\" builds\n"
@@ -193,6 +194,11 @@ void usage(const char *argv0)
               << "  --official-waveform-branches\n"
               << "                      write the analysis's waveform sources into _raw.root and\n"
               << "                      _histos.root as mvme does (channel 0, 8 bits)\n"
+              << "  --extract-hit-flags add a flag column for each MDPP amplitude (0 clean,\n"
+              << "                      1 over/underflow, 2 pile-up, 3 both; QDC: 1 overflow) and\n"
+              << "                      write <runId>_hit_flags.analysis, with which official mvme\n"
+              << "                      makes the identical files; every value's random part then\n"
+              << "                      differs from files made without this option\n"
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
@@ -632,6 +638,7 @@ int convert_one(int argc, char *argv[])
     bool noWaveforms = false;
     bool defaultFilters = false;
     bool officialWaveformBranches = false;
+    bool extractHitFlags = false;
     bool published = false;
     unsigned threads = 1;
     int progressFd = -1;
@@ -677,6 +684,7 @@ int convert_one(int argc, char *argv[])
         else if (arg == "--no-waveforms") noWaveforms = true;
         else if (arg == "--default-filters") defaultFilters = true;
         else if (arg == "--official-waveform-branches") officialWaveformBranches = true;
+        else if (arg == "--extract-hit-flags") extractHitFlags = true;
         else if (arg == "-h" || arg == "--help") { usage(argv[0]); return 0; }
         else if (!arg.empty() && arg[0] == '-') { usage(argv[0]); return 2; }
         else if (input.empty()) input = arg;
@@ -798,7 +806,14 @@ int convert_one(int argc, char *argv[])
                 analysisText = listfile.analysisJson;
         }
 
-        auto analysis = flirt::parse_analysis(analysisText, vmeConfig);
+        // --extract-hit-flags: a flag source for each amplitude, added to
+        // whichever analysis is in use before it is parsed (hit_flags.h).
+        // analysisText stays the input, whose sha256 the report records.
+        flirt::HitFlagsEdit hitFlagsEdit;
+        if (extractHitFlags)
+            hitFlagsEdit = flirt::add_hit_flag_sources(analysisText, vmeConfig);
+
+        auto analysis = flirt::parse_analysis(extractHitFlags ? hitFlagsEdit.analysisJson : analysisText, vmeConfig);
         const auto samplingSettings = flirt::sampling_settings(vmeConfig, analysis);
 
         // The modules with a tree in the waveforms file; they do not depend on
@@ -835,6 +850,7 @@ int convert_one(int argc, char *argv[])
         if (writeWaveforms)
             waveformTrees = flirt::waveform_trees(vmeConfig, analysis);
         const std::string waveformsName = listfile.runId + "_waveforms.root";
+        const std::string hitFlagsName = listfile.runId + "_hit_flags.analysis";
 
         // Output names as the writer derives them from the run ID (root_output.cc).
         const std::string reportPath = outDir + "/" + listfile.runId + ".flirt.json";
@@ -842,6 +858,8 @@ int convert_one(int argc, char *argv[])
                                              outDir + "/" + listfile.runId + "_histos.root", reportPath };
         if (writeWaveforms)
             outputs.push_back(outDir + "/" + waveformsName);
+        if (extractHitFlags)
+            outputs.push_back(outDir + "/" + hitFlagsName);
 
         // I6: no output path may resolve to an input file (same device and inode).
         {
@@ -918,6 +936,20 @@ int convert_one(int argc, char *argv[])
             waveforms = std::make_unique<flirt::WaveformWriter>(
                 writer.addFile(listfile.runId, waveformsName), waveformTrees);
 
+        // The edited analysis, staged and published with the other outputs.
+        if (extractHitFlags)
+        {
+            const auto path = writer.addFile(listfile.runId, hitFlagsName);
+            std::ofstream out(path, std::ios::binary);
+            out << hitFlagsEdit.analysisJson;
+            out.close();
+            if (!out)
+                throw std::runtime_error("error writing " + path);
+        }
+        flirt::HitFlagCounter hitFlagCounter(analysis, hitFlagsEdit.sources);
+        if (extractHitFlags)
+            hitFlagCounter.handleMessage(serverInfo);
+
         const double writerInitSeconds = seconds_since(tWriter);
 
         // Producer and consumer in two threads, joined by message batches. The
@@ -942,6 +974,9 @@ int convert_one(int argc, char *argv[])
                                            [&](flirt::MessageBatch &batch)
                                            {
                                                throw_if_stop_requested();
+                                               if (extractHitFlags)
+                                                   for (size_t i = 0; i < batch.size; ++i)
+                                                       hitFlagCounter.handleMessage(batch.messages[i]);
                                                if (collectTraces)
                                                    take_traces(batch, waveformEntries, waveformBatch,
                                                                waveforms.get(), otherTraces);
@@ -1061,7 +1096,8 @@ int convert_one(int argc, char *argv[])
                               {"acceptDamagedInput", acceptDamagedInput},
                               {"threads", threads}, {"noWaveforms", noWaveforms},
                               {"defaultFilters", defaultFilters},
-                              {"officialWaveformBranches", officialWaveformBranches} };
+                              {"officialWaveformBranches", officialWaveformBranches},
+                              {"extractHitFlags", extractHitFlags} };
         report["output"] = { {"raw", output.rawFile}, {"histos", output.histosFile},
                              {"rawBytes", static_cast<int64_t>(output.rawBytes)},
                              {"histosBytes", static_cast<int64_t>(output.histosBytes)},
@@ -1084,6 +1120,15 @@ int convert_one(int argc, char *argv[])
                                   {"tracesOtherLength", st.tracesOtherLength} });
             }
             report["waveforms"] = trees;
+        }
+        std::string hitFlagsFile;
+        report["hitFlags"] = { {"enabled", false} };
+        if (extractHitFlags)
+        {
+            hitFlagsFile = output.extraFiles.back();
+            report["output"]["hitFlagsAnalysis"] = hitFlagsFile;
+            report["output"]["hitFlagsAnalysisBytes"] = static_cast<int64_t>(output.extraBytes.back());
+            report["hitFlags"] = flirt::hit_flags_json(hitFlagsEdit, hitFlagCounter, hitFlagsName);
         }
         report["waveformConfig"] = waveformConfig.modules;
 
@@ -1200,7 +1245,7 @@ int convert_one(int argc, char *argv[])
 
         std::cerr << "wrote " << output.rawFile << ", " << output.histosFile << ", "
                   << (waveformsFile.empty() ? "" : waveformsFile + ", ")
-                  << reportPath
+                  << (hitFlagsFile.empty() ? "" : hitFlagsFile + ", ") << reportPath
                   << " (" << pipeline.messagesEmitted << " events, " << totalSeconds << " s)\n";
         std::cerr << flirt::run_summary_line(runFacts.times, runFacts.events) << "\n";
         if (!ditherOffsetFrom.empty())
@@ -1209,6 +1254,8 @@ int convert_one(int argc, char *argv[])
             for (const auto &note: officialNotes)
                 std::cerr << "note: --dither-offset-from: " << note << "\n";
         }
+        if (extractHitFlags)
+            std::cerr << flirt::hit_flags_line(report["hitFlags"]) << "\n";
         if (const auto line = flirt::settings_changes_line(runFacts.settings); !line.empty())
             std::cerr << line << "\n";
         if (!skippedModules.empty())
