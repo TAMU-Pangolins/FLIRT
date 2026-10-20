@@ -110,6 +110,42 @@ uint64_t count_at(const json &report, const char *pointer)
     return value.is_number_unsigned() || value.is_number_integer() ? value.get<uint64_t>() : 0;
 }
 
+// The splitter's per event and module counters, summed.
+uint64_t sum(const json &value)
+{
+    if (value.is_number())
+        return value.get<uint64_t>();
+    uint64_t total = 0;
+    if (value.is_array())
+        for (const auto &v: value)
+            total += sum(v);
+    return total;
+}
+
+// The counters that describe the recording, as the report has them, in the
+// order of flirt-convert's "data quality" line (flirt_convert.cc
+// data_quality()); the lost ETH packets have their own row.
+std::string quality_text(const json &report)
+{
+    std::string text;
+    auto add = [&](uint64_t n, const char *one, const char *many)
+    {
+        if (n)
+            text += (text.empty() ? "" : ", ") + counted(n, one, many);
+    };
+    add(count_at(report, "/replay/buffersWithErrors"), "damaged buffer", "damaged buffers");
+    add(count_at(report, "/replay/unusedBytes"), "unused byte", "unused bytes");
+    add(count_at(report, "/replay/emptyStackFrames"), "empty stack frame", "empty stack frames");
+    add(count_at(report, "/replay/internalBufferLoss"), "lost readout buffer", "lost readout buffers");
+    add(sum(at(report, "/multiEventSplitting/counters/moduleHeaderMismatches")), "module header mismatch",
+        "module header mismatches");
+    add(sum(at(report, "/multiEventSplitting/counters/moduleEventSizeExceedsBuffer")),
+        "module event longer than its data", "module events longer than their data");
+    add(count_at(report, "/replay/waveformDecoderMessages"), "waveform decoder message", "waveform decoder messages");
+    add(count_at(report, "/replay/parserWarnings"), "readout parser warning", "readout parser warnings");
+    return text;
+}
+
 }
 
 std::string Painter::operator()(const std::string &text, Tone tone) const
@@ -194,6 +230,11 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
 
     if (const auto lost = loss_block_text(facts); !lost.empty())
         row("lost", lost);
+    if (const auto quality = quality_text(report); !quality.empty())
+    {
+        row("quality", quality);
+        b.quality = true;
+    }
 
     // The notes, then the warnings, in the order flirt-convert's child prints them.
     if (const auto line = settings_changes_line(facts.settings); starts_with(line, "note: "))
@@ -361,6 +402,14 @@ std::vector<std::string> render_end(const std::vector<const RunBlock *> &blocks,
                 lines.push_back(std::move(line));
         }
     }
+    for (auto b: blocks)
+        if (b->quality)
+        {
+            for (auto &line: rows_at(0, "quality", "What the DAQ itself recorded, not a FLIRT error. Each run's"
+                                     " .flirt.json lists them.", paint, width))
+                lines.push_back(std::move(line));
+            break;
+        }
     return lines;
 }
 

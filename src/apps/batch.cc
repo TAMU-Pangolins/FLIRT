@@ -827,7 +827,7 @@ RunBlock block_of(const Run &run, const Options &opt)
         }
         catch (const std::exception &)
         {
-            b = RunBlock{ run.runId, "✓", Tone::Ok, "converted", " in " + elapsed_text(run.seconds), {}, 0, {} };
+            b = RunBlock{ run.runId, "✓", Tone::Ok, "converted", " in " + elapsed_text(run.seconds), {}, 0, false, {} };
             add_warning(b, "its report " + run.runId + ".flirt.json cannot be read");
             b.attention = "its report cannot be read";
         }

@@ -47,6 +47,7 @@ struct RunBlock
     std::string rest;       // after it: " in 5.4 s", ": already converted ..."
     std::vector<BlockRow> rows;
     size_t warnings = 0;    // warning rows
+    bool quality = false;   // a quality row
     std::string attention;  // why it needs attention, for the end; empty: it needs none
 };
 
@@ -68,7 +69,7 @@ std::vector<std::string> render_row(const std::string &label, const std::string 
                                     size_t width);
 
 // The end: "Done: ...", the runs that need attention, then the notes of
-// several runs (said once). `blocks`: every run
+// several runs (said once) and the quality explanation. `blocks`: every run
 // of the batch, in order; `counted`: their results' counts in "Done" words;
 // `notesInBlocks`: the notes were said in the blocks (a single run, a watch).
 std::vector<std::string> render_end(const std::vector<const RunBlock *> &blocks, const std::string &counts,

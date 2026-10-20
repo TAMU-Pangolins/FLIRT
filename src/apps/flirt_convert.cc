@@ -358,6 +358,47 @@ std::pair<std::string, std::string> parser_health(const flirt::PipelineResult &p
     return { "warn", detail };
 }
 
+// Counters that describe the recording rather than the file; mvme exports such
+// runs as they are, so they are warnings, never failures. Empty if all zero.
+std::string data_quality(const flirt::PipelineResult &pipeline)
+{
+    const auto &pc = pipeline.parserCounters;
+    const auto &sc = pipeline.splitterCounters;
+    std::string result;
+
+    auto add = [&](uint64_t count, const char *what)
+    {
+        if (count)
+            result += (result.empty() ? "" : ", ") + std::to_string(count) + " " + what;
+    };
+
+    auto sum = [](const std::vector<std::vector<size_t>> &perEventModule)
+    {
+        uint64_t total = 0;
+        for (const auto &modules: perEventModule)
+            for (auto count: modules)
+                total += count;
+        return total;
+    };
+
+    add(pipeline.buffersWithErrors, "buffers with errors");
+    add(pc.unusedBytes, "unused bytes");
+    add(pc.emptyStackFrames, "empty stack frames");
+    add(pc.ethPacketLoss, "lost ETH packets");
+    add(pc.internalBufferLoss, "lost readout buffers");
+    add(sum(sc.moduleHeaderMismatches), "module header mismatches (multi-event splitting)");
+    add(sum(sc.moduleEventSizeExceedsBuffer), "module event sizes exceeding the data");
+    add(pipeline.waveformDecoderMessages, "waveform decoder messages");
+    // mesytec-mvlc's messages are not printed any more (library_log.h); the
+    // report keeps the first 100.
+    const auto &pw = pipeline.parserWarnings;
+    add(pw.count, pw.count == 1 ? "readout parser warning" : "readout parser warnings");
+    if (pw.count)
+        result += pw.count > pw.messages.size() ? "; the report lists the first " + std::to_string(pw.messages.size())
+                                                : std::string("; the report lists them");
+    return result;
+}
+
 // A value that may be unknown, as JSON: null if unknown.
 template <typename T>
 es::json or_null(const std::optional<T> &value)
@@ -785,6 +826,10 @@ int convert_one(int argc, char *argv[])
         const auto [parserResult, parserDetail] = parser_health(pipeline);
         checks.set(check::Parser, parserResult, parserDetail);
 
+        const auto quality = data_quality(pipeline);
+        checks.set(check::DataQuality, quality.empty() ? "pass" : "warn",
+                   quality.empty() ? "no anomalies recorded" : quality);
+
         const auto waveformConfig = waveform_config_check(samplingSettings, vmeConfig, analysis, waveforms.get(),
                                                           otherTraces, !noWaveforms);
         checks.set(check::WaveformConfig, waveformConfig.result, waveformConfig.detail);
@@ -965,6 +1010,8 @@ int convert_one(int argc, char *argv[])
         std::cerr << flirt::run_summary_line(runFacts.times, runFacts.events) << "\n";
         if (const auto line = flirt::settings_changes_line(runFacts.settings); !line.empty())
             std::cerr << line << "\n";
+        if (!quality.empty())
+            std::cerr << "data quality (recorded as the DAQ wrote it, not an error): " << quality << "\n";
         // Loss details, the receive-buffer note (run_info.h) and the rate
         // warnings (run_timeline.h).
         if (const auto loss = flirt::loss_text(runFacts); !loss.empty())
