@@ -1,8 +1,9 @@
 #ifndef FLIRT_INTEGRITY_H
 #define FLIRT_INTEGRITY_H
 
-// Input integrity checks (docs/design.md, "Input integrity, strict by default"): the CRC-32 and length of ZIP
-// entries as FLIRT reads them, and the identity of input files.
+// Input integrity checks (docs/design.md, "Input integrity, strict by
+// default"): the CRC-32 and length of ZIP entries as FLIRT reads them, and the
+// identity of input files.
 
 #include <cstdint>
 #include <ctime>
