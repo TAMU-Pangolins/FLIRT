@@ -5,6 +5,7 @@
 #include <mesytec-mvlc/mvlc_readout_parser.h>
 
 #include "flirt/extract.h"
+#include "flirt/integrity.h"
 #include "flirt/library_log.h"
 #include "flirt/listfile.h"
 #include "flirt/listfile_scan.h"
@@ -32,6 +33,9 @@ struct PipelineResult
     // mesytec-mvlc's log messages during the replay (the readout parser's
     // warnings, library_log.h): counted and the first 100 kept, not printed.
     LibraryMessages parserWarnings;
+    // The listfile entry as the replay read it (check I2). A read error ends
+    // the replay early, as in mvme, and is recorded here instead of thrown.
+    EntryCheck listfileEntry;
     // Wall time of the producer: replay, parse, extract (waveform decoding
     // included), i.e. run_pipeline() minus the time spent in the sink.
     double producerSeconds = 0;

@@ -150,13 +150,14 @@ PipelineResult run_pipeline(const ListfileInfo &listfile, const VMEConfig &vmeCo
     // they never reach the analysis here either.
     callbacks.systemEvent = [](void *, int, const u32 *, u32) {};
 
-    // Replay exactly as MVLCListfileWorker does (mvlc_listfile_worker.cc:230-259).
+    // Replay exactly as MVLCListfileWorker does (mvlc_listfile_worker.cc:230-259),
+    // through a handle that checks what it delivers (I2).
     mvlc::listfile::ZipReader zip;
     zip.openArchive(listfile.archivePath);
-    auto readHandle = zip.openEntry(listfile.listfileEntry);
+    CheckedReadHandle readHandle(zip, listfile.listfileEntry);
 
     mvlc::ReadoutBufferQueues queues(ReadoutBufferSize, ReadoutBufferCount);
-    mvlc::ReplayWorker replay(queues, readHandle);
+    mvlc::ReplayWorker replay(queues, &readHandle);
 
     if (auto ec = replay.start().get())
         throw std::runtime_error("replay start failed: " + ec.message());
@@ -220,11 +221,15 @@ PipelineResult run_pipeline(const ListfileInfo &listfile, const VMEConfig &vmeCo
         throw;
     }
 
+    // Idle: the replay thread no longer reads, so readHandle's check is final.
     auto counters = replay.counters();
     result.buffersRead = counters.buffersRead;
     result.bytesRead = counters.bytesRead;
+    result.listfileEntry = readHandle.check();
 
-    if (counters.eptr)
+    // A read error ends the replay early. mvme does not look at it and exports
+    // what was read (mvlc_listfile_worker.cc:249-292); FLIRT records it (I2).
+    if (counters.eptr && result.listfileEntry.readError.empty())
         std::rethrow_exception(counters.eptr);
     if (counters.ec)
         throw std::runtime_error("replay error: " + counters.ec.message());

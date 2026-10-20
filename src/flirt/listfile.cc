@@ -2,6 +2,7 @@
 #include "common/names.h"
 
 #include <algorithm>
+#include <memory>
 #include <mesytec-mvlc/mvlc_listfile.h>
 #include <mesytec-mvlc/mvlc_listfile_zip.h>
 
@@ -19,20 +20,38 @@ bool ends_with(const std::string &s, const std::string &suffix)
         && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-// Reads a whole entry.
-std::string read_entry(mvlc::listfile::ZipReader &zip, const std::string &name)
+// Reads a whole entry, recording its CRC-32 and length (I3). A read error is
+// recorded too; the caller decides what a damaged entry means.
+std::string read_entry(mvlc::listfile::ZipReader &zip, const std::string &name, EntryCheck &check)
 {
     auto entries = zip.entryNameList();
 
     if (std::find(entries.begin(), entries.end(), name) == entries.end())
         return {};
 
-    auto rh = zip.openEntry(name);
+    std::unique_ptr<CheckedReadHandle> rh;
     std::string result;
     char buf[64 * 1024];
 
-    while (size_t n = rh->read(reinterpret_cast<uint8_t *>(buf), sizeof(buf)))
-        result.append(buf, n);
+    try
+    {
+        rh = std::make_unique<CheckedReadHandle>(zip, name);
+
+        while (size_t n = rh->read(reinterpret_cast<uint8_t *>(buf), sizeof(buf)))
+            result.append(buf, n);
+    }
+    catch (const std::exception &e)
+    {
+        if (!rh) // the entry could not be opened; read errors are in rh->check()
+        {
+            check = {};
+            check.entry = name;
+            check.readError = e.what();
+        }
+    }
+
+    if (rh)
+        check = rh->check();
 
     return result;
 }
@@ -71,7 +90,21 @@ ListfileInfo read_listfile_info(const std::string &archivePath)
     result.runId = run_id_from_path(archivePath);
 
     mvlc::listfile::ZipReader zip;
-    zip.openArchive(result.archivePath);
+
+    try
+    {
+        zip.openArchive(result.archivePath);
+    }
+    catch (const std::exception &e)
+    {
+        throw integrity_failure(checks::Archive, "fail",
+                                "cannot read the ZIP archive or its central directory ("
+                                + std::string(e.what()) + "): if mvme is still writing this run,"
+                                " it is not finished yet; otherwise mvme's listfile recovery"
+                                " (mvme_listfile_recovery_gui) may be able to recover the data");
+    }
+
+    result.archiveEntries = zip.entryNameList().size();
 
     // First entry with a listfile extension (mvme listfile_replay.cc:111-125).
     for (const auto &name: zip.entryNameList())
@@ -100,11 +133,25 @@ ListfileInfo read_listfile_info(const std::string &archivePath)
         throw unsupported_input("classic .mvmelst listfiles are not supported (MVLC only): "
                                 + result.listfileEntry);
 
-    result.analysisJson = read_entry(zip, "analysis.analysis");
+    result.analysisJson = read_entry(zip, "analysis.analysis", result.analysisEntry);
 
-    // The preamble is read again by the replay.
-    auto rh = zip.openEntry(result.listfileEntry);
-    auto preamble = mvlc::listfile::read_preamble(*rh);
+    // The preamble is read again, and CRC-checked, by the replay (I2); read
+    // errors here are reported as such.
+    std::unique_ptr<CheckedReadHandle> rh;
+    mvlc::listfile::Preamble preamble;
+
+    try
+    {
+        rh = std::make_unique<CheckedReadHandle>(zip, result.listfileEntry);
+        preamble = mvlc::listfile::read_preamble(*rh);
+    }
+    catch (const std::exception &e)
+    {
+        if (!rh || !rh->check().readError.empty())
+            throw integrity_failure(checks::ListfileEntry, "fail", "cannot read '"
+                                    + result.listfileEntry + "': " + e.what());
+        throw;
+    }
 
     // Format detection (listfile_replay.cc:141-147).
     if (preamble.magic == mvlc::listfile::get_filemagic_eth())
