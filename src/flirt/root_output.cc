@@ -277,6 +277,7 @@ struct RootWriter::Private: public es::Client
     std::string tmpBase;                    // the run ID it was made for
     std::vector<std::string> tmpFiles;      // names created inside tmpDir (root_safe_name())
     std::string rawName, histosName;        // real names, as published
+    std::vector<std::string> extraNames;    // addFile() real names, in order
     bool endRunSeen = false;
     bool synced = false;                    // sync() done; publish() may follow
     RootTimings timings;
@@ -620,6 +621,27 @@ void RootWriter::close()
     d->timings.writeClose += seconds_since(t0);
 }
 
+std::string RootWriter::addFile(const std::string &runId, const std::string &name)
+{
+    if (d->exp)
+        throw std::runtime_error("addFile() after BeginRun");
+    // ROOT gets the staging name inside tmpDir; publish() links the real one.
+    const auto staging = root_safe_name(name);
+    auto taken = [this](const std::string &n) {
+        return std::find(d->tmpFiles.begin(), d->tmpFiles.end(), n) != d->tmpFiles.end()
+            || std::find(d->extraNames.begin(), d->extraNames.end(), n) != d->extraNames.end();
+    };
+    if (name.empty() || name.find('/') != std::string::npos || taken(name) || taken(staging))
+        throw std::runtime_error("addFile(): bad or repeated name '" + name + "'");
+    if (file_exists(d->opts.outDir + "/" + name))
+        throw std::runtime_error("output exists, refusing to overwrite: " + d->opts.outDir + "/" + name);
+
+    d->makeTmpDir(runId.empty() ? "unknown_run" : runId);
+    d->tmpFiles.push_back(staging);
+    d->extraNames.push_back(name);
+    return d->tmpDir + "/" + staging;
+}
+
 namespace
 {
 
@@ -666,6 +688,7 @@ RootOutputResult RootWriter::sync()
     const auto t0 = std::chrono::steady_clock::now();
     auto staged = [this](const std::string &name) { return d->tmpDir + "/" + root_safe_name(name); };
     std::vector<std::string> names = { d->rawName, d->histosName };
+    names.insert(names.end(), d->extraNames.begin(), d->extraNames.end());
     for (const auto &name: names)
         sync_path(staged(name), d->opts.outDir + "/" + name);
 
@@ -673,6 +696,13 @@ RootOutputResult RootWriter::sync()
     d->result.histosFile = d->opts.outDir + "/" + d->histosName;
     d->result.rawBytes = size_of(staged(d->rawName));
     d->result.histosBytes = size_of(staged(d->histosName));
+    d->result.extraFiles.clear();
+    d->result.extraBytes.clear();
+    for (const auto &name: d->extraNames)
+    {
+        d->result.extraFiles.push_back(d->opts.outDir + "/" + name);
+        d->result.extraBytes.push_back(size_of(staged(name)));
+    }
     d->synced = true;
     d->timings.publish += seconds_since(t0);
     return d->result;
@@ -719,6 +749,7 @@ void RootWriter::publish(const std::string &reportName, const std::string &repor
     // Publish without replacing: link() fails if the destination exists. If a
     // file cannot be published, the ones before it are taken back.
     std::vector<std::string> names = { d->rawName, d->histosName };
+    names.insert(names.end(), d->extraNames.begin(), d->extraNames.end());
     names.push_back(reportName);
     std::vector<std::string> published;
     auto take_back = [&](const std::string &error) {

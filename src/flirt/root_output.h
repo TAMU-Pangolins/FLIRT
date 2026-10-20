@@ -27,10 +27,12 @@ struct RootOutputResult
 {
     std::string rawFile;            // published <outDir>/<runId>_raw.root
     std::string histosFile;         // published <outDir>/<runId>_histos.root
+    std::vector<std::string> extraFiles; // published addFile() files, in order
     std::vector<size_t> eventHits;  // tree entries per VME event
     size_t totalDataBytes = 0;
     // The files' sizes, as written (and as published).
     uint64_t rawBytes = 0, histosBytes = 0;
+    std::vector<uint64_t> extraBytes;
 };
 
 // Wall time of the writer's stages, in seconds.
@@ -59,13 +61,19 @@ class RootWriter
         void handleBatch(const MessageBatch &batch);
         // After EndRun: closes the output files, still in the private directory.
         void close();
-        // After close(): flushes every output to disk (fsync) and returns
-        // what publish() will publish, its final paths and sizes, for the
-        // report.
+        // Before BeginRun: creates the private directory for the run `runId`
+        // (the run ID BeginRun will carry) if needed and reserves `name` in
+        // it, for a file someone else writes. Returns its absolute path.
+        // publish() links it after the raw and histogram files, never over an
+        // existing file; it is removed with the writer if not published.
+        std::string addFile(const std::string &runId, const std::string &name);
+        // After close(), and after every addFile() file is complete: flushes
+        // every output to disk (fsync) and returns what publish() will
+        // publish, its final paths and sizes, for the report.
         RootOutputResult sync();
         // After sync(): writes the report `reportContents` as `reportName` in
         // the private directory and flushes it; links the outputs into outDir
-        // (raw, then histograms) and flushes outDir;
+        // (raw, histograms, then the addFile() files) and flushes outDir;
         // links the report last and flushes outDir again. A report in outDir
         // therefore means its whole set is there and on disk, even after a
         // kill -9 or a power loss. Never over an existing file: on a failure
