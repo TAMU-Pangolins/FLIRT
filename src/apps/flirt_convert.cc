@@ -4,9 +4,12 @@
 //
 // Input integrity checks run on every conversion (docs/design.md, "Input
 // integrity, strict by default"). If one fails, nothing is published and the
-// exit code is 1, unless --accept-damaged-input is given. Outputs are flushed
-// to disk (fsync) and published with the report last (RootWriter::publish), so
-// a report means a complete set.
+// exit code is 1, unless --accept-damaged-input is given. SIGINT, SIGTERM or
+// SIGHUP stops the conversion: nothing is published and the exit code is 130;
+// once it is publishing, it finishes. Outputs are flushed to disk (fsync) and
+// published with the report last (RootWriter::publish), so a report means a
+// complete set. SIGHUP stays ignored if it was ignored when the process started
+// (nohup).
 
 #include <QCryptographicHash>
 #include <algorithm>
@@ -14,6 +17,7 @@
 #include <cerrno>
 #include <chrono>
 #include <climits>
+#include <csignal>
 #include <fcntl.h>
 #include <iostream>
 #include <sys/stat.h>
@@ -45,6 +49,63 @@ using Clock = std::chrono::steady_clock;
 double seconds_since(Clock::time_point t0)
 {
     return std::chrono::duration<double>(Clock::now() - t0).count();
+}
+
+// Set by SIGINT, SIGTERM or SIGHUP; the conversion then stops before publishing.
+std::atomic<bool> stopRequested{false};
+static_assert(std::atomic<bool>::is_always_lock_free);
+
+// SIGHUP was ignored when the process started (nohup; an ignored disposition
+// survives exec), so it stays ignored.
+bool hupIgnoredAtStart = false;
+
+void on_stop_signal(int)
+{
+    stopRequested = true;
+}
+
+void install_stop_handler(int sig)
+{
+    struct sigaction sa = {};
+    sa.sa_handler = on_stop_signal;
+    sa.sa_flags = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(sig, &sa, nullptr);
+}
+
+// ROOT has no SIGHUP handler (ESignals, TSysEvtHandler.h), so this can run
+// first thing: a hangup while the RootWriter creates its private directory
+// is caught too.
+void install_hangup_handler()
+{
+    struct sigaction old = {};
+    sigaction(SIGHUP, nullptr, &old);
+    hupIgnoredAtStart = old.sa_handler == SIG_IGN;
+    if (!hupIgnoredAtStart)
+        install_stop_handler(SIGHUP);
+}
+
+// ROOT installs its own signal handlers when it initializes, so this must run
+// after the RootWriter (and with it gROOT) exists. ROOT also ignores SIGINT
+// while it writes to a file (seen in /proc/<pid>/status SigIgn during the
+// fill), so a SIGINT sent to this process alone can be lost.
+void install_stop_handlers()
+{
+    install_stop_handler(SIGINT);
+    install_stop_handler(SIGTERM);
+    if (!hupIgnoredAtStart)
+        install_stop_handler(SIGHUP);
+}
+
+struct interrupted: std::runtime_error
+{
+    interrupted(): std::runtime_error("interrupted") { }
+};
+
+void throw_if_stop_requested()
+{
+    if (stopRequested)
+        throw interrupted();
 }
 
 void usage(const char *argv0)
@@ -253,8 +314,11 @@ bool still_unchanged(const std::string &path, const flirt::FileIdentity &before)
 
 int convert_one(int argc, char *argv[])
 {
+    install_hangup_handler();
+
     std::string input, outDir;
     bool acceptDamagedInput = false;
+    bool published = false;
     flirt::RunInfo runInfo;
     flirt::RootOutputOptions rootOpts;
 
@@ -374,6 +438,7 @@ int convert_one(int argc, char *argv[])
         const auto tWriter = Clock::now();
 
         flirt::RootWriter writer(rootOpts);
+        install_stop_handlers();
 
         // ServerInfo first, as on a real event server connection.
         es::Message serverInfo;
@@ -391,12 +456,14 @@ int convert_one(int argc, char *argv[])
         {
             flirt::ThreadedSink consumer([&](flirt::MessageBatch &batch)
                                          {
+                                             throw_if_stop_requested();
                                              writer.handleBatch(batch);
                                          });
 
             pipeline = flirt::run_pipeline(listfile, vmeConfig, analysis, runInfo,
                                            [&](flirt::MessageBatch &batch)
                                            {
+                                               throw_if_stop_requested();
                                                consumer.push(batch);
                                            });
             consumer.finish();
@@ -426,6 +493,7 @@ int convert_one(int argc, char *argv[])
         if (failed && !acceptDamagedInput)
             return refuse_to_publish(checks, true);
 
+        throw_if_stop_requested();
         // Every output flushed to disk first; the report is made from what
         // will be published, then published last (RootWriter::publish).
         const auto output = writer.sync();
@@ -522,7 +590,9 @@ int convert_one(int argc, char *argv[])
                 throw std::runtime_error("cannot make the report " + reportPath + ": " + e.what()
                                          + "; nothing was published");
             }
+            throw_if_stop_requested();
             writer.publish(listfile.runId + ".flirt.json", contents);
+            published = true;
         }
 
         std::cerr << "wrote " << output.rawFile << ", " << output.histosFile << ", " << reportPath
@@ -541,6 +611,12 @@ int convert_one(int argc, char *argv[])
     }
     catch (const std::exception &e)
     {
+        // The RootWriter, and with it its private output directory, is gone.
+        if (stopRequested && !published)
+        {
+            std::cerr << "interrupted: nothing was published\n";
+            return 130;
+        }
         std::cerr << "error: " << e.what() << "\n";
         return 1;
     }
