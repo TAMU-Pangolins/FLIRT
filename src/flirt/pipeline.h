@@ -39,6 +39,9 @@ struct PipelineResult
     // Wall time of the producer: replay, parse, extract (waveform decoding
     // included), i.e. run_pipeline() minus the time spent in the sink.
     double producerSeconds = 0;
+    // BeginRun, EndRun, UnixTimetick, Pause and Resume sections as the parser
+    // delivered them, the preamble's BeginRun included (run_summary.h).
+    RunRecorder run;
 };
 
 // Receives the message batches in stream order (message_batch.h). The sink

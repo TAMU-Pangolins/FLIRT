@@ -5,6 +5,7 @@
 #include <map>
 
 #include "common/failures.h"
+#include "flirt/run_info.h"
 #include "flirt/run_summary.h"
 
 namespace flirt
@@ -165,10 +166,24 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
     };
     std::vector<std::string> warnings;
 
+    // The run: its times and events (run_info.h, run_summary.h).
+    const auto facts = run_facts_from_json(at(report, "/run"));
+    row("run", run_times_text(facts.times));
+    std::string rate;
+    if (facts.times.live && *facts.times.live > 0)
+    {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.1f per second", double(facts.events) / double(*facts.times.live));
+        rate = buf;
+    }
     // The tree entries: one per EventData message, so after multi-event
     // splitting (flirt_convert.cc "wrote ... events").
     const uint64_t written = count_at(report, "/replay/eventDataMessages");
-    row("events", number(written));
+    if (at(report, "/multiEventSplitting/counters").is_object() && written != facts.events)
+        row("events", number(facts.events) + " read out" + (rate.empty() ? "" : " (" + rate + ")") + ", "
+            + number(written) + " after multi-event splitting");
+    else
+        row("events", number(facts.events) + (rate.empty() ? "" : " (" + rate + ")"));
 
     // The files this run wrote, by their endings.
     std::string files = "_raw.root   _histos.root";

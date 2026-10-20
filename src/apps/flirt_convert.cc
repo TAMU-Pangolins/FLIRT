@@ -44,6 +44,8 @@
 #include "flirt/module_templates.h"
 #include "flirt/pipeline.h"
 #include "flirt/root_output.h"
+#include "flirt/run_info.h"
+#include "flirt/run_summary.h"
 #include "flirt/sampling_config.h"
 #include "flirt/threaded_sink.h"
 #include "flirt/vme_config.h"
@@ -875,6 +877,10 @@ int convert_one(int argc, char *argv[])
                              {"ethPacketsProcessed", pc.ethPacketsProcessed},
                              {"ethPacketLoss", pc.ethPacketLoss}, {"internalBufferLoss", pc.internalBufferLoss} };
 
+        // report["run"] (run_info.h).
+        const auto runFacts = flirt::run_facts(listfile, pc, pipeline.run);
+        report["run"] = flirt::run_json(runFacts, vmeConfig);
+
         // Module metas and, when used, the multi-event splitter's filters and counters.
         es::json modules = es::json::array();
         for (size_t ei = 0; ei < vmeConfig.events.size(); ++ei)
@@ -955,6 +961,7 @@ int convert_one(int argc, char *argv[])
                   << (waveformsFile.empty() ? "" : waveformsFile + ", ")
                   << reportPath
                   << " (" << pipeline.messagesEmitted << " events, " << totalSeconds << " s)\n";
+        std::cerr << flirt::run_summary_line(runFacts.times, runFacts.events) << "\n";
         for (const auto &line: waveformConfig.messages)
             std::cerr << line << "\n";
         if (!matchesOfficialLayout)

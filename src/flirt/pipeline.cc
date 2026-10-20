@@ -479,8 +479,16 @@ PipelineResult run_pipeline(const ListfileInfo &listfile, const VMEConfig &vmeCo
 
     // Timeticks and other system events only feed analysis operators and
     // counters, never the data sources (mvlc_stream_worker.cc:277-312), so
-    // they never reach the analysis here either.
-    callbacks.systemEvent = [](void *, int, const u32 *, u32) {};
+    // they never reach the analysis here either. The five timestamped
+    // sections are recorded for the run summary (RunRecorder, listfile_scan.h),
+    // with the parser's running counters. The preamble's BeginRun reaches the
+    // parser too: read_preamble() seeks back to just after the magic bytes
+    // (mvlc_listfile.cc:224-225) before the ReplayWorker reads the stream
+    // (mvlc_replay_worker.cc:165, 205).
+    callbacks.systemEvent = [&result](void *, int, const u32 *header, u32 size)
+    {
+        result.run.systemEvent(header, size, result.parserCounters);
+    };
 
     // Replay exactly as MVLCListfileWorker does (mvlc_listfile_worker.cc:230-259),
     // through a handle that checks what it delivers (I2).

@@ -36,6 +36,25 @@ std::vector<mvlc::StackCommandBuilder> sanitize_readout_stacks(
 
 }
 
+uint64_t readout_events(const parser::ReadoutParserCounters &counters)
+{
+    uint64_t events = 0;
+    for (const auto &hits: counters.eventHits)
+        events += hits.second;
+    return events;
+}
+
+void RunRecorder::systemEvent(const uint32_t *header, uint32_t size, const parser::ReadoutParserCounters &)
+{
+    const uint8_t subtype = mvlc::system_event::extract_subtype(header[0]);
+
+    if (size != 3 || !is_run_time_subtype(subtype))
+        return;
+
+    const uint64_t seconds = header[1] | (static_cast<uint64_t>(header[2]) << 32);
+    runTimes.record(subtype, static_cast<int64_t>(seconds));
+}
+
 parser::ReadoutParserState make_listfile_parser(const ListfileInfo &listfile, const VMEConfig &vmeConfig)
 {
     // The readout structure comes from the recorded crate config; mvme derives
