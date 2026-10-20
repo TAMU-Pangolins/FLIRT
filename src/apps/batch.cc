@@ -116,6 +116,7 @@ struct Run
     Clock::time_point start;
     bool convert = false;   // this batch converts it (not skipped or refused)
     uint64_t bytes = 0;     // input size, for the progress estimate
+    uint64_t key = 0;       // the launch's number, for the progress display
     bool diskFull = false;  // the child said "No space left on device"
     std::string eventPhase; // --json-events: the last progress event's phase and percent
     int eventPercent = -1;
@@ -713,12 +714,14 @@ int run_batch(int argc, char *argv[])
     }
     events.send("start", { {"flirt", build_identity()}, {"options", options_json(opt)} });
 
-    // From here on the text goes to stderr, a line at a time, and with
-    // --json-events each line is also a message event: a line about one run
-    // ("<runId>: ...") carries its run ID and the text after that prefix.
+    // From here on the text goes to stderr through the display, above its
+    // live line, and with --json-events each line is also a message event: a
+    // line about one run ("<runId>: ...") carries its run ID and the text
+    // after that prefix.
+    ProgressDisplay display;
     const Say say = [&](const std::string &text)
     {
-        std::cerr << text << "\n";
+        display.line(text);
         if (!events.on())
             return;
         const Run *about = nullptr;
@@ -797,6 +800,9 @@ int run_batch(int argc, char *argv[])
     bool stopping = false;
     int stoppedBy = 0;
     std::vector<Run *> running;
+    bool started = false;
+    Clock::time_point firstStart;
+    uint64_t launches = 0;
 
     auto handle_signal = [&](int sig)
     {
@@ -814,16 +820,34 @@ int run_batch(int argc, char *argv[])
     // The runs this batch converts, running ones with their progress.
     auto show_progress = [&]()
     {
+        using Phase = ProgressDisplay::Run::Phase;
+        std::vector<ProgressDisplay::Run> list;
         for (auto &run: runs)
         {
             if (!run.convert)
                 continue;
+            ProgressDisplay::Run r;
+            r.runId = run.runId;
+            r.key = run.key;
+            r.bytes = run.bytes;
             if (run.pid)
             {
                 run.progress.poll();
                 progress_event(run, false);
+                r.phase = Phase::Running;
+                r.state = run.progress.state();
             }
+            else if (run.result.empty())
+                r.phase = Phase::Pending;
+            else
+            {
+                r.phase = run.result == "converted" ? Phase::Converted : Phase::Ended;
+            }
+            list.push_back(r);
         }
+
+        const double elapsed = started ? seconds_since(firstStart) : 0;
+        display.update(list, elapsed);
     };
 
     auto wait_signal = [&](long nanoseconds) -> bool
@@ -863,6 +887,12 @@ int run_batch(int argc, char *argv[])
             queue.pop_front();
 
             say(run.runId + ": converting " + run.input);
+            if (!started)
+            {
+                started = true;
+                firstStart = Clock::now();
+            }
+            run.key = ++launches;
             if (launch(run, opt, argv[0]))
             {
                 running.push_back(&run);
@@ -881,7 +911,9 @@ int run_batch(int argc, char *argv[])
             break;
 
         show_progress();
-        // A quarter second while conversions run.
+        // A quarter second while conversions run, so that a log shows each
+        // tenth of a short run (a child writes its progress at most every
+        // 0.5 s).
         long wait = 250000000;
         wait_signal(wait);
     }
@@ -908,6 +940,7 @@ int run_batch(int argc, char *argv[])
         exitCode = 3;
 
     const double wall = seconds_since(t0);
+    display.finish();
 
     auto summary = make_summary(opt, runs, totals, wall, exitCode, stoppedBy);
     if (!opt.summaryPath.empty() && !write_summary(opt, summary, tell) && exitCode == 0)

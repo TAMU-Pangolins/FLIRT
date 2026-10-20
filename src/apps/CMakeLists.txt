@@ -1,4 +1,4 @@
-add_executable(flirt-convert flirt_convert.cc batch.cc progress.cc)
+add_executable(flirt-convert flirt_convert.cc batch.cc batch_text.cc progress.cc)
 # flirt_common comes with flirt (named again, macOS ld warns of a duplicate).
 target_link_libraries(flirt-convert PRIVATE flirt flirt_root)
 target_compile_definitions(flirt-convert PRIVATE MVME_GIT_DESCRIBE="${MVME_GIT_DESCRIBE}")
