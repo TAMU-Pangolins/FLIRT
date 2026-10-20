@@ -44,4 +44,15 @@ endif()
 include(cmake/mvme_parts.cmake)
 include(cmake/mvme_root_event.cmake)
 
+# Build identity for the conversion report. FLIRT's is regenerated on every
+# build (flirt_version.h), mvme's pinned sources only change on a reconfigure.
+set(FLIRT_VERSION_HEADER ${CMAKE_BINARY_DIR}/flirt_generated/flirt_version.h)
+add_custom_target(flirt_version
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${CMAKE_SOURCE_DIR} -DOUTPUT=${FLIRT_VERSION_HEADER}
+        -P ${CMAKE_SOURCE_DIR}/cmake/flirt_version.cmake
+    BYPRODUCTS ${FLIRT_VERSION_HEADER}
+    VERBATIM)
+execute_process(COMMAND git describe --always --tags WORKING_DIRECTORY ${MVME_DIR}
+    OUTPUT_VARIABLE MVME_GIT_DESCRIBE OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+
 add_subdirectory(src)
