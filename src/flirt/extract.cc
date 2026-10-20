@@ -8,6 +8,7 @@
 
 #include "analysis/a2/memory.h"
 #include "common/utf8.h"
+#include "flirt/sampling_config.h"
 #include "util/variablify.h"
 
 namespace es = mvme::event_server;
@@ -39,14 +40,20 @@ std::string variablified(const QString &name)
 using SampleEvents = std::deque<mesytec::mvlc::Protected<
     mesytec::mvme::mdpp_sampling::DecodedMdppSampleEvent>>;
 
+// Per event index: (dsIndex, index into SampleEvents) of each MDPP sample
+// decoder source, in dsIndex order.
+using SampleSlots = std::vector<std::vector<std::pair<size_t, size_t>>>;
+
 // a2_adapter_build / a2_adapter_build_datasources (a2_adapter.cc:1643-1680,
 // 1194-1296): one DataSource per configured source, in a2 order. dsIndexes
 // receives, per event, the original index of each a2 data source.
 a2::A2 *build_a2(memory::Arena &arena, const AnalysisConfig &analysis,
-                 SampleEvents &sampleEvents, std::vector<std::vector<u32>> &dsIndexes)
+                 SampleEvents &sampleEvents, std::vector<std::vector<u32>> &dsIndexes,
+                 SampleSlots &sampleSlots)
 {
     auto a2 = arena.pushObject<a2::A2>(&arena);
     dsIndexes.assign(analysis.dataSources.size(), {});
+    sampleSlots.assign(analysis.dataSources.size(), {});
 
     for (size_t ei = 0; ei < analysis.dataSources.size(); ++ei)
     {
@@ -74,6 +81,7 @@ a2::A2 *build_a2(memory::Arena &arena, const AnalysisConfig &analysis,
                     ds = a2::make_datasource_mdpp_sample_decoder(
                         &arena, src.moduleTypeName, src.maxChannels, src.maxSamples,
                         sampleEvents.emplace_back(), src.rngSeed, src.moduleIndex, src.options);
+                    sampleSlots[ei].emplace_back(dsIndex, sampleEvents.size() - 1);
                     break;
             }
 
@@ -142,8 +150,25 @@ struct Extractor::Private
     // Per event: the original data-source index of each a2 data source.
     std::vector<std::vector<u32>> dsIndexes;
     // Per waveform source; mvme keeps one in each DataSourceMdppSampleDecoder
-    // for its UI (analysis.h).
+    // for its UI (analysis.h). processEvent() takes the traces from here.
     SampleEvents sampleEvents;
+    SampleSlots sampleSlots;
+    // Per event: the analysis decoders' shared events processEvent() reads.
+    // inFile: a tree module's traces (reused_decoder); otherwise only counted
+    // for the waveform config check (a module without a tree).
+    struct TraceSlot { int moduleIndex; size_t sampleEvent; bool inFile; };
+    std::vector<std::vector<TraceSlot>> traceSlots;
+    // FLIRT's own decoders, per event, for the tree modules without a reused
+    // analysis decoder: not a2 data sources; only run when traces are
+    // collected.
+    struct FlirtDecoder
+    {
+        int moduleIndex;
+        mesytec::mvme::mdpp_sampling::DecoderFunction decode;
+        mesytec::mvme::mdpp_sampling::DecodedMdppSampleEvent decoded;
+    };
+    std::vector<std::vector<FlirtDecoder>> flirtDecoders;
+    std::vector<FlirtDecoder> noFlirtDecoders; // stays empty
     std::vector<std::vector<int>> moduleIndexMaps;
     es::EventDataDescriptions edds;
     es::VMETree vmeTree;
@@ -153,11 +178,51 @@ struct Extractor::Private
 Extractor::Extractor(const VMEConfig &vmeConfig, const AnalysisConfig &analysis)
     : d(std::make_unique<Private>())
 {
-    d->a2 = build_a2(d->arena, analysis, d->sampleEvents, d->dsIndexes);
+    d->a2 = build_a2(d->arena, analysis, d->sampleEvents, d->dsIndexes, d->sampleSlots);
     a2::a2_begin_run(d->a2, {});
 
     for (const auto &event: vmeConfig.events)
         d->moduleIndexMaps.push_back(make_module_index_map(event));
+
+    // Where each tree module's traces come from, and the analysis decoders of
+    // the other modules, whose traces are only counted.
+    d->traceSlots.resize(vmeConfig.events.size());
+    d->flirtDecoders.resize(vmeConfig.events.size());
+    for (size_t ei = 0; ei < d->sampleSlots.size(); ++ei)
+    {
+        const auto &eventSources = analysis.dataSources[ei];
+        auto slot_of = [&](const DataSourceConfig *src)
+        {
+            const size_t dsIndex = src - eventSources.data();
+            for (const auto &slot: d->sampleSlots[ei])
+                if (slot.first == dsIndex)
+                    return slot.second;
+            throw std::logic_error("MDPP sample decoder source without a shared event");
+        };
+
+        if (ei < analysis.waveformModules.size())
+            for (int mi: analysis.waveformModules[ei])
+            {
+                if (const auto *src = reused_decoder(vmeConfig, analysis, static_cast<int>(ei), mi))
+                {
+                    d->traceSlots[ei].push_back({ mi, slot_of(src), true });
+                    continue;
+                }
+                // The decoder a2 builds for the module's type (a2.cc:779).
+                const auto type = vmeConfig.events.at(ei).modules.at(mi).typeName.toStdString();
+                auto decode = mesytec::mvme::mdpp_sampling::get_decoder_function(type.c_str());
+                if (!decode)
+                    throw std::logic_error("no MDPP sample decoder for module type " + type);
+                d->flirtDecoders[ei].push_back({ mi, std::move(decode), {} });
+            }
+
+        for (const auto &src: eventSources)
+            if (src.kind == DataSourceConfig::Kind::MdppSampleDecoder
+                && !is_waveform_module(analysis, static_cast<int>(ei), src.moduleIndex)
+                && std::none_of(d->traceSlots[ei].begin(), d->traceSlots[ei].end(),
+                                [&src](const Private::TraceSlot &t) { return t.moduleIndex == src.moduleIndex; }))
+                d->traceSlots[ei].push_back({ src.moduleIndex, slot_of(&src), false });
+    }
 
     // make_vme_tree_description (event_server_util.cc:62-91)
     for (int ei = 0; ei < static_cast<int>(vmeConfig.events.size()); ++ei)
@@ -226,10 +291,27 @@ es::Message Extractor::endRunMessage() const
 }
 
 bool Extractor::processEvent(int eventIndex, const parser::ModuleData *moduleDataList,
-                             unsigned moduleCount, es::Message &out)
+                             unsigned moduleCount, es::Message &out, EventTraces *traces)
 {
     if (eventIndex < 0 || eventIndex >= static_cast<int>(d->edds.size()))
         return false;
+
+    // The decoder only runs for modules with data; reset the shared events
+    // read below so an event without data leaves none behind.
+    static const std::vector<Private::TraceSlot> noSlots;
+    const auto &traceSlots = traces && static_cast<size_t>(eventIndex) < d->traceSlots.size()
+        ? d->traceSlots[eventIndex] : noSlots;
+    auto &flirtDecoders = traces && static_cast<size_t>(eventIndex) < d->flirtDecoders.size()
+        ? d->flirtDecoders[eventIndex] : d->noFlirtDecoders;
+
+    if (traces)
+    {
+        traces->clear();
+        for (const auto &slot: traceSlots)
+            d->sampleEvents[slot.sampleEvent].access().ref() = {};
+        for (auto &fd: flirtDecoders)
+            fd.decoded = {};
+    }
 
     // mvlc_stream_worker.cc:195-246 with Analysis::beginEvent/processModuleData/
     // endEvent (analysis.cc:6240-6274).
@@ -246,10 +328,31 @@ bool Extractor::processEvent(int eventIndex, const parser::ModuleData *moduleDat
         {
             a2::a2_process_module_data(d->a2, eventIndex, moduleIndex,
                                        moduleData.data.data, moduleData.data.size);
+
+            // FLIRT's decoders get the same data, as an a2 sample decoder
+            // source would (a2.cc:4927-4929, 866).
+            for (auto &fd: flirtDecoders)
+                if (fd.moduleIndex == moduleIndex)
+                    fd.decoded = fd.decode(moduleData.data.data, moduleData.data.size, {});
         }
     }
 
     a2::a2_end_event(d->a2, eventIndex);
+
+    // What the sample decoders moved into their shared events (a2.cc:917-922).
+    for (const auto &slot: traceSlots)
+    {
+        auto access = d->sampleEvents[slot.sampleEvent].access();
+        if (!access.ref().traces.isEmpty())
+            traces->push_back({ slot.moduleIndex, std::move(access.ref()), slot.inFile });
+    }
+
+    // FLIRT's decoders: kept likewise if they have a trace. A module has one
+    // slot or one FLIRT decoder, and each module has its own tree, so the
+    // order does not matter.
+    for (auto &fd: flirtDecoders)
+        if (!fd.decoded.traces.isEmpty())
+            traces->push_back({ fd.moduleIndex, std::move(fd.decoded), true });
 
     // EventServer::endEvent (event_server.cc:478-632). The message is sent if
     // the event has data sources (:500-507).
