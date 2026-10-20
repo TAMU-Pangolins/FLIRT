@@ -12,7 +12,7 @@ std::string valid_utf8(const std::string &text);
 
 // The text as it may be shown on a terminal: valid_utf8, then every C0 or C1
 // control character (newline and tab too) and DEL replaced by '?', so no
-// escape sequence is printed.
+// escape sequence is printed (flirt-tui's printable(), src/tui/text.h).
 std::string printable_text(const std::string &text);
 
 // The JSON value with every string and every object key passed through

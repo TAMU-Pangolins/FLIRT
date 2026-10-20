@@ -10,9 +10,9 @@ const std::vector<Compression> &compressions()
     // The names are what the user sees: each is renamed on its line alone
     // (docs/design.md, "Compression": measurements).
     static const std::vector<Compression> table = {
-        { "mvme", 101 },
-        { "fast", 501 },
-        { "small", 509 },
+        { "mvme", 101, "files identical to official ones (ZLIB level 1)" },
+        { "fast", 501, "faster, files a little bigger (ZSTD level 1)" },
+        { "small", 509, "smaller files, many times slower (ZSTD level 9)" },
     };
     return table;
 }

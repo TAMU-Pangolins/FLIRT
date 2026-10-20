@@ -1,8 +1,8 @@
 #ifndef FLIRT_COMMON_COMPRESSION_H
 #define FLIRT_COMMON_COMPRESSION_H
 
-// The ROOT files' compression (flirt-convert --compression). Plain C++, no
-// ROOT.
+// The ROOT files' compression (flirt-convert --compression, flirt-tui's
+// Advanced options). Shared by flirt-convert and flirt-tui: plain C++, no ROOT.
 
 #include <string>
 #include <vector>
@@ -14,6 +14,7 @@ struct Compression
 {
     const char *name;   // what --compression takes and the report records
     int setting;        // ROOT's algorithm * 100 + level, as TFile takes it
+    const char *gives;  // a few words for --help and flirt-tui
 };
 
 // The choices, the default first: "mvme", the TFile default mvme_root_client

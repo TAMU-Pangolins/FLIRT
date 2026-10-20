@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds FLIRT natively on macOS (Apple silicon) into build/macos:
 #   scripts/build_macos.sh [extra cmake arguments]
-# The programs are then build/macos/prefix/bin/flirt-convert and flirt-info;
-# then tools/compare into build/macos-<tool>.
+# The programs are then build/macos/prefix/bin/flirt-convert, flirt-info and
+# flirt-tui; then tools/compare into build/macos-<tool>.
 # Needs Xcode's command line tools, Homebrew's cmake, ninja, qt@5 and boost,
 # and ROOT 6 (root-config on PATH, or ROOTSYS set). Installs nothing itself.
 set -euo pipefail
@@ -33,6 +33,11 @@ for tool in cmake ninja; do
     [ -x "$brewbin/$tool" ] || fail "$tool not found in $brewbin: brew install $tool"
 done
 [ -x /usr/bin/c++ ] && xcrun --show-sdk-path > /dev/null 2>&1 || fail "no C++ compiler: xcode-select --install"
+if [ ! -f "$repo/external/FTXUI/CMakeLists.txt" ]; then
+    fail "external/FTXUI is missing: git submodule update --init external/FTXUI
+(or build without flirt-tui: scripts/build_macos.sh -DFLIRT_BUILD_TUI=OFF)"
+fi
+
 # A clean PATH: other toolchains on the caller's PATH (e.g. anaconda's Boost,
 # ninja and install_name_tool) must not end up in the build.
 export PATH=$rootbin:$brewbin:/usr/bin:/bin:/usr/sbin:/sbin

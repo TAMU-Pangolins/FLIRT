@@ -14,7 +14,7 @@
 namespace flirt
 {
 
-// The colours.
+// The colours, flirt-tui's where it has them (src/tui/view_parts.cc).
 enum class Tone { Plain, Ok, Skip, Warning, Error, Busy, Label, Dim };
 
 // Text with the terminal's colour codes, or as it is when off.

@@ -1,8 +1,8 @@
 #ifndef FLIRT_COMMON_ESTIMATE_H
 #define FLIRT_COMMON_ESTIMATE_H
 
-// The batch's time estimate, for flirt-convert's progress display (docs:
-// README "Progress").
+// The batch's time estimate, shared by flirt-convert's progress display and
+// flirt-tui (docs: README "Progress").
 
 #include <cstdint>
 #include <string>
