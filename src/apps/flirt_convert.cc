@@ -42,6 +42,7 @@
 #include "common/platform.h"
 #include "common/utf8.h"
 #include "flirt/analysis_config.h"
+#include "flirt/default_filters.h"
 #include "flirt/integrity.h"
 #include "flirt/listfile.h"
 #include "flirt/module_templates.h"
@@ -166,13 +167,15 @@ void throw_if_stop_requested()
 void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <listfile.zip> -o <outdir>"
-              << " [--analysis <file.analysis>]"
+              << " [--analysis <file.analysis> | --default-filters]"
               << " [--experiment-name <name>] [--experiment-title <title>]"
               << " [--dither-offset <N>] [--threads <T>] [--no-waveforms]"
               << " [--official-waveform-branches]"
               << " [--accept-damaged-input] [--progress-fd <N>]\n"
               << "\n"
               << "  --analysis          use this mvme analysis instead of the one in the archive\n"
+              << "  --default-filters   use the analysis mvme's \"Generate default filters\" builds\n"
+              << "                      for every module (multi-event settings from the archive's)\n"
               << "  --experiment-name   mvme workspace setting Experiment/Name (default: Experiment)\n"
               << "  --experiment-title  mvme workspace setting Experiment/Title (default: empty)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
@@ -580,6 +583,7 @@ int convert_one(int argc, char *argv[])
     std::string input, outDir, analysisFile;
     bool acceptDamagedInput = false;
     bool noWaveforms = false;
+    bool defaultFilters = false;
     bool officialWaveformBranches = false;
     bool published = false;
     unsigned threads = 1;
@@ -623,6 +627,7 @@ int convert_one(int argc, char *argv[])
         }
         else if (arg == "--accept-damaged-input") acceptDamagedInput = true;
         else if (arg == "--no-waveforms") noWaveforms = true;
+        else if (arg == "--default-filters") defaultFilters = true;
         else if (arg == "--official-waveform-branches") officialWaveformBranches = true;
         else if (arg == "-h" || arg == "--help") { usage(argv[0]); return 0; }
         else if (!arg.empty() && arg[0] == '-') { usage(argv[0]); return 2; }
@@ -632,6 +637,13 @@ int convert_one(int argc, char *argv[])
 
     if (input.empty() || outDir.empty() || runInfo.experimentName.empty())
     {
+        usage(argv[0]);
+        return 2;
+    }
+
+    if (defaultFilters && !analysisFile.empty())
+    {
+        std::cerr << "error: --default-filters and --analysis exclude each other\n";
         usage(argv[0]);
         return 2;
     }
@@ -695,6 +707,7 @@ int convert_one(int argc, char *argv[])
         // conversion if it is the analysis in use.
         const auto &embedded = listfile.analysisEntry;
         std::string analysisText;
+        flirt::DefaultFilters defaultFiltersAnalysis;
 
         if (!analysisFile.empty())
         {
@@ -708,15 +721,26 @@ int convert_one(int argc, char *argv[])
         }
         else
         {
+            // --default-filters takes the embedded analysis's multi-event
+            // settings, so it is in use then too.
             if (embedded.entry.empty())
-                throw flirt::unsupported_input("archive contains no analysis.analysis; use --analysis");
+                throw flirt::unsupported_input(defaultFilters
+                    ? "archive contains no analysis.analysis, whose multi-event settings --default-filters needs"
+                    : "archive contains no analysis.analysis; use --analysis");
 
-            checks.set(check::AnalysisEntry, embedded.result(), embedded.detail());
+            checks.set(check::AnalysisEntry, embedded.result(), embedded.detail()
+                       + (defaultFilters ? " (in use: --default-filters takes its multi-event settings)" : ""));
 
             if (checks.failed() && !acceptDamagedInput)
                 return refuse_to_publish(checks, true);
 
-            analysisText = listfile.analysisJson;
+            if (defaultFilters)
+            {
+                defaultFiltersAnalysis = flirt::make_default_filters(vmeConfig, templates, listfile.analysisJson);
+                analysisText = defaultFiltersAnalysis.analysisJson;
+            }
+            else
+                analysisText = listfile.analysisJson;
         }
 
         auto analysis = flirt::parse_analysis(analysisText, vmeConfig);
@@ -921,15 +945,33 @@ int convert_one(int argc, char *argv[])
                             {"mtimeNs", static_cast<int64_t>(inputIdentity.mtime.tv_sec) * 1000000000
                                         + inputIdentity.mtime.tv_nsec} };
         report["analysis"] = { {"source", !analysisFile.empty() ? real_path(analysisFile)
-                                                         : std::string("archive analysis.analysis")},
+                                          : defaultFilters ? std::string("default filters")
+                                                           : std::string("archive analysis.analysis")},
                                {"sha256", analysisFile.empty() ? es::json(nullptr)
                                                                : es::json(sha256_hex(analysisText))},
                                {"version", analysis.version} };
+        std::vector<std::string> skippedModules;
+        if (defaultFilters)
+        {
+            // Object IDs are random, as in mvme, so the analysis has no stable sha256.
+            es::json modules = es::json::array();
+            for (const auto &m: defaultFiltersAnalysis.modules)
+            {
+                modules.push_back({ {"event", m.eventIndex}, {"module", m.module}, {"type", m.type},
+                                    {"template", m.templateFile.empty() ? es::json(nullptr)
+                                                                        : es::json(m.templateFile)} });
+                if (m.templateFile.empty())
+                    skippedModules.push_back(m.module + " (" + m.type + ")");
+            }
+            report["analysis"]["templates"] = real_path(templatesDir);
+            report["analysis"]["modules"] = modules;
+        }
         report["options"] = { {"experimentName", runInfo.experimentName},
                               {"experimentTitle", runInfo.experimentTitle},
                               {"ditherOffset", rootOpts.ditherOffset},
                               {"acceptDamagedInput", acceptDamagedInput},
                               {"threads", threads}, {"noWaveforms", noWaveforms},
+                              {"defaultFilters", defaultFilters},
                               {"officialWaveformBranches", officialWaveformBranches} };
         report["output"] = { {"raw", output.rawFile}, {"histos", output.histosFile},
                              {"rawBytes", static_cast<int64_t>(output.rawBytes)},
@@ -1064,6 +1106,14 @@ int convert_one(int argc, char *argv[])
         std::cerr << flirt::run_summary_line(runFacts.times, runFacts.events) << "\n";
         if (const auto line = flirt::settings_changes_line(runFacts.settings); !line.empty())
             std::cerr << line << "\n";
+        if (!skippedModules.empty())
+        {
+            std::string names;
+            for (const auto &m: skippedModules)
+                names += (names.empty() ? "" : ", ") + m;
+            std::cerr << "note: default filters: no default_filters.analysis template for " << names
+                      << "; skipped, as mvme does\n";
+        }
         if (!quality.empty())
             std::cerr << "data quality (recorded as the DAQ wrote it, not an error): " << quality << "\n";
         // Loss details, the receive-buffer note (run_info.h) and the rate

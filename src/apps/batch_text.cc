@@ -237,6 +237,17 @@ RunBlock converted_block(const std::string &runId, double seconds, const json &r
     }
 
     // The notes, then the warnings, in the order flirt-convert's child prints them.
+    std::vector<std::string> skipped;
+    for (const auto &m: at(report, "/analysis/modules").is_array() ? at(report, "/analysis/modules") : json::array())
+        if (m.value("template", json()).is_null())
+            skipped.push_back(m.value("module", std::string()) + " (" + m.value("type", std::string()) + ")");
+    if (!skipped.empty())
+    {
+        std::string names;
+        for (const auto &s: skipped)
+            names += (names.empty() ? "" : ", ") + s;
+        note("default filters: no default_filters.analysis template for " + names + "; skipped, as mvme does");
+    }
     if (const auto line = settings_changes_line(facts.settings); starts_with(line, "note: "))
         note(line.substr(6));
     else if (starts_with(line, "warning: "))

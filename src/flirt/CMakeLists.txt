@@ -7,6 +7,7 @@ add_library(flirt STATIC
     pipeline.cc
     integrity.cc
     sampling_config.cc
+    default_filters.cc
     run_summary.cc
     settings_changes.cc
     run_timeline.cc

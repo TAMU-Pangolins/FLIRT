@@ -72,7 +72,7 @@ struct usage_error: std::runtime_error
 void usage(const char *argv0)
 {
     std::cerr << "usage: " << argv0 << " <input>... -o <outdir> [-j N] [--list <file>]"
-              << " [--summary <file.json>] [--analysis <file.analysis>]"
+              << " [--summary <file.json>] [--analysis <file.analysis> | --default-filters]"
               << " [--experiment-name <name>] [--experiment-title <title>]"
               << " [--dither-offset <N>] [--threads <T>] [--no-waveforms] [--official-waveform-branches]"
               << " [--accept-damaged-input] [--json-events]\n"
@@ -98,6 +98,8 @@ void usage(const char *argv0)
               << "  --summary <file>    also write the summary as JSON to this new file (exit\n"
               << "                      code 1 if it cannot be written)\n"
               << "  --analysis          use this mvme analysis instead of the one in the archive\n"
+              << "  --default-filters   use the analysis mvme's \"Generate default filters\" builds\n"
+              << "                      for every module (multi-event settings from the archive's)\n"
               << "  --experiment-name   mvme workspace setting Experiment/Name (default: Experiment)\n"
               << "  --experiment-title  mvme workspace setting Experiment/Title (default: empty)\n"
               << "  --dither-offset     skip N draws of TRandom3(4357) first; 0 matches a fresh\n"
@@ -138,6 +140,7 @@ struct Options
     std::string experimentName = "Experiment", experimentTitle;
     uint64_t ditherOffset = 0;
     bool noWaveforms = false;
+    bool defaultFilters = false;
     bool officialWaveformBranches = false;
     bool acceptDamagedInput = false;
     bool jsonEvents = false;    // --json-events: stdout carries JSON events only
@@ -323,6 +326,7 @@ Options parse_args(int argc, char *argv[])
         }
         else if (arg == "--accept-damaged-input") opt.acceptDamagedInput = true;
         else if (arg == "--no-waveforms") opt.noWaveforms = true;
+        else if (arg == "--default-filters") opt.defaultFilters = true;
         else if (arg == "--official-waveform-branches") opt.officialWaveformBranches = true;
         else if (arg == "--json-events") opt.jsonEvents = true;
         else if (!arg.empty() && arg[0] == '-') throw usage_error("unknown option " + arg, true);
@@ -352,6 +356,8 @@ Options parse_args(int argc, char *argv[])
     }
     if (opt.experimentName.empty())
         throw usage_error("--experiment-name must not be empty");
+    if (opt.defaultFilters && !opt.analysisFile.empty())
+        throw usage_error("--default-filters and --analysis exclude each other");
 
     struct stat st;
     if (opt.outDir.empty())
@@ -524,6 +530,7 @@ Mismatch mismatch(const Options &opt, const Run &run)
         { "experimentName", valid_utf8(opt.experimentName), "experiment name" },
         { "experimentTitle", valid_utf8(opt.experimentTitle), "experiment title" },
         { "noWaveforms", opt.noWaveforms, "--no-waveforms setting" },
+        { "defaultFilters", opt.defaultFilters, "--default-filters setting" },
         { "officialWaveformBranches", opt.officialWaveformBranches, "--official-waveform-branches setting" } };
     for (const auto &[name, value, noun]: options)
     {
@@ -699,6 +706,8 @@ bool launch(Run &run, const Options &opt, const char *argv0)
     args.insert(args.end(), { "--dither-offset", std::to_string(opt.ditherOffset) });
     if (opt.noWaveforms)
         args.push_back("--no-waveforms");
+    if (opt.defaultFilters)
+        args.push_back("--default-filters");
     if (opt.officialWaveformBranches)
         args.push_back("--official-waveform-branches");
     if (!opt.analysisFile.empty())
@@ -1024,6 +1033,7 @@ json options_json(const Options &opt)
              {"experimentName", opt.experimentName}, {"experimentTitle", opt.experimentTitle},
              {"ditherOffset", opt.ditherOffset},
              {"noWaveforms", opt.noWaveforms},
+             {"defaultFilters", opt.defaultFilters},
              {"officialWaveformBranches", opt.officialWaveformBranches},
              {"acceptDamagedInput", opt.acceptDamagedInput},
              {"watch", opt.watch ? json(opt.watchDir) : json(nullptr)},

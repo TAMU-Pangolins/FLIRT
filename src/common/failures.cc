@@ -92,7 +92,9 @@ Failure failed_check(const std::string &check, const std::string &result, const 
     {
         f.headline = proven ? "the analysis file in the archive is damaged"
                             : "the analysis file in the archive could not be checked against the archive's own record";
-        f.todo = copyAgain + "To convert with it anyway, " + accept + ".";
+        f.todo = copyAgain + "Another analysis ("
+                 + name(where, "Analysis → Default filters or Another file...", "--default-filters or --analysis <file>")
+                 + ") avoids it; to convert with it anyway, " + accept + ".";
     }
     else if (check == InputUnchanged)
     {
@@ -149,6 +151,15 @@ Failure unsupported(const std::string &what, FailureFor where)
     {
         f.headline = "the archive holds no analysis";
         f.todo = "Choose an analysis: " + name(where, "Analysis → Another file...", "--analysis <file>") + ".";
+    }
+    else if (contains(what, "analysis version") || contains(what, "not valid JSON") || contains(what, "data source class")
+             || contains(what, "event building") || contains(what, "rngSeed") || starts_with(what, "waveform source")
+             || contains(what, "duplicate object ids"))
+    {
+        f.headline = "the analysis is not supported";
+        f.todo = "Choose another analysis (" + name(where, "Analysis → Default filters or Another file...",
+                                                    "--default-filters or --analysis <file>")
+                 + "), or convert this run with mvme.";
     }
     else if (starts_with(what, "modules '") && contains(what, "would both get the waveform tree"))
     {
