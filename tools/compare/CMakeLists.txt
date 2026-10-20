@@ -10,6 +10,6 @@ endif()
 # Deliberately ROOT only: the comparator must share nothing with the converter.
 find_package(ROOT REQUIRED COMPONENTS Core RIO Tree Hist)
 
-add_executable(compare main.cc checks_file.cc checks_tree.cc)
+add_executable(compare main.cc checks_file.cc checks_tree.cc checks_histo.cc)
 target_link_libraries(compare PRIVATE ROOT::Core ROOT::RIO ROOT::Tree ROOT::Hist)
 target_compile_options(compare PRIVATE -Wall -Wextra)

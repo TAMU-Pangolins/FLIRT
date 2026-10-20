@@ -38,4 +38,7 @@ void check_run_info(TFile *cand, TFile *ref, Check &c, bool ignoreRunId);
 // (layout), then every leaf of every entry bitwise (values).
 void check_trees(TFile *cand, TFile *ref, Check &layout, Check &values, const Ignore &ignore);
 
+// Every TH1 present in both files: identity, binning, contents and stats bitwise.
+void check_histos(TFile *cand, TFile *ref, Check &c, const Ignore &ignore);
+
 #endif

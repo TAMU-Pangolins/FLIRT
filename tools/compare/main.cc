@@ -22,7 +22,7 @@ namespace
 void usage(const char *argv0)
 {
     std::fprintf(stderr,
-                 "usage: %s <cand_raw.root> <ref_raw.root>"
+                 "usage: %s <cand_raw.root> <ref_raw.root> [--histos <cand_histos.root> <ref_histos.root>]"
                  " [--max-report N] [--ignore-branch-regex <regex>]"
                  " [--ignore-run-id]\n", argv0);
 }
@@ -43,6 +43,7 @@ std::unique_ptr<TFile> open_read(const std::string &path)
 int main(int argc, char *argv[])
 {
     std::vector<std::string> positional;
+    std::string histoCand, histoRef;
     size_t maxReport = 10;
     Ignore ignore;
     bool ignoreRunId = false;
@@ -50,7 +51,12 @@ int main(int argc, char *argv[])
     for (int i = 1; i < argc; i++)
     {
         std::string arg = argv[i];
-        if (arg == "--max-report" && i + 1 < argc)
+        if (arg == "--histos" && i + 2 < argc)
+        {
+            histoCand = argv[++i];
+            histoRef = argv[++i];
+        }
+        else if (arg == "--max-report" && i + 1 < argc)
             maxReport = std::strtoul(argv[++i], nullptr, 10);
         else if (arg == "--ignore-branch-regex" && i + 1 < argc)
         {
@@ -113,6 +119,17 @@ int main(int argc, char *argv[])
     Check &layout = make("raw: tree layout");
     Check &values = make("raw: tree values (bitwise)");
     check_trees(cand.get(), ref.get(), layout, values, ignore);
+
+    if (!histoCand.empty())
+    {
+        auto hc = open_read(histoCand), hr = open_read(histoRef);
+        if (!hc || !hr)
+            return 2;
+        std::printf("candidate histos: %s\nreference histos: %s\n", histoCand.c_str(), histoRef.c_str());
+        check_keys(hc.get(), hr.get(), make("histos: keys"), ignore);
+        check_streamers(hc.get(), hr.get(), make("histos: streamer info"), ignore);
+        check_histos(hc.get(), hr.get(), make("histos: contents (bitwise)"), ignore);
+    }
 
     bool identical = true;
     for (const auto &c: checks)
