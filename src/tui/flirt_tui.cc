@@ -21,6 +21,11 @@
 // dispatcher thread) plus the cursor's row. At exit the dispatcher ends, every
 // reader is stopped (its running flirt-info killed and reaped) and every thread
 // joined before the program ends: no flirt-info outlives flirt-tui.
+//
+// "Find from a file..." runs <its own directory>/flirt-convert
+// --find-dither-offset --json-events (flirt::DitherFinder) in a thread of its
+// own, one search at a time; a new search, Esc, "stop" and the exit kill and
+// reap the running one.
 
 #include <atomic>
 #include <chrono>
@@ -54,6 +59,7 @@
 #include "model.h"
 #include "settings.h"
 #include "text.h"
+#include "ui/dither_find.h"
 #include "ui/files.h"
 #include "ui/info.h"
 #include "ui/job.h"
@@ -418,6 +424,36 @@ int main(int argc, char *argv[])
         waveQuit = false;
     };
 
+    // The dither offset search: one at a time, its events posted with its id.
+    std::mutex findMutex;
+    std::shared_ptr<flirt::DitherFinder> finder;
+    std::thread findThread;
+    auto stopFinder = [&] {
+        std::shared_ptr<flirt::DitherFinder> running;
+        std::thread thread;
+        {
+            std::lock_guard<std::mutex> lock(findMutex);
+            running.swap(finder);
+            thread.swap(findThread);
+        }
+        if (running)
+            running->stop();    // the waiting run() returns at once
+        if (thread.joinable())
+            thread.join();
+    };
+    actions.findDither = [&](const std::string &file, uint64_t id) {
+        stopFinder();
+        auto search = std::make_shared<flirt::DitherFinder>(convertExe);
+        std::lock_guard<std::mutex> lock(findMutex);
+        finder = search;
+        findThread = std::thread([&, search, file, id] {
+            search->run(file, [&, id](const json &event) {
+                post([&, id, event] { apply_find_event(model, id, event); });
+            });
+        });
+    };
+    actions.stopFind = stopFinder;
+
     // The run information of every row (docs/design.md, "Reading several
     // listfiles at once"): InfoQueue picks the next read, each read runs in its
     // own thread with its own InfoReader (one flirt-info). The cursor's row
@@ -629,6 +665,7 @@ int main(int argc, char *argv[])
         gateClosed = true;
     }
     actions.closeWaveforms();
+    stopFinder();
     // No flirt-info outlives flirt-tui: no read starts any more, every
     // running one is killed and reaped, and every read's thread joined.
     {

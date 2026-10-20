@@ -822,7 +822,10 @@ std::vector<Line> help_lines(const Model &m, int width)
         l.key("Compression", "the ROOT files' compression (" + choices + "); the values are the same with each, "
                              "and ROOT reads them all");
     }
-    l.key("Esc", "back to box 2");
+    l.key("From a file…", "under the dither offset: finds an official _raw.root's dither offset (flirt-convert "
+                          "--find-dither-offset): pick the file; the search runs in the background (about a minute at "
+                          "most), Esc or Stop search stops it; the number fills the field");
+    l.key("Esc", "stop the search, if one runs; else back to box 2");
     l.blank();
     l.add("Waveforms (box 1; a frame is one event's traces of one module)", "heading");
     l.key("↑↓", "choose a file; the right box plots it");
@@ -895,6 +898,7 @@ std::vector<Line> help_lines(const Model &m, int width)
         l.key("z full window", "(full in a narrow window) the plot in the full window");
         l.key("Page label", "(ch 0-15 of 32) the grid's next page");
         l.key("Plot options", "a click on a row: as Space; on grid or overlaid, typical or own: that one");
+        l.key("From a file…", "under the dither offset: pick a _raw.root; Stop search ends the search");
         l.key("Channel picker", "a click on a channel picks it; All, None, Done");
         l.add("To select text, hold Shift while you drag (⌥ Option in iTerm2; in macOS Terminal, ⌘R turns the "
               "mouse off and on), or start flirt-tui with --no-mouse. Tested in tmux; other terminals not yet "
@@ -913,7 +917,7 @@ std::string browser_title(const Model &m)
 {
     static const std::map<std::string, std::string> titles = {
         {"listfile", "Add listfiles"}, {"analysis", "Analysis file"}, {"output", "Output folder"},
-        {"waveforms", "Waveforms file"} };
+        {"waveforms", "Waveforms file"}, {"rawroot", "Official _raw.root"} };
     const auto found = titles.find(m.browser.mode);
     return found == titles.end() ? "Browser" : found->second;
 }
@@ -1004,7 +1008,8 @@ Element browser_inner(const Model &m, int inner, int height, Hits *hits)
     {
         const std::string none = b.mode == "output" ? "No folders here." : b.mode == "listfile"
             ? "No listfiles (.zip) or folders here." : b.mode == "waveforms"
-            ? "No waveforms files (_waveforms.root) or folders here." : "No .analysis files or folders here.";
+            ? "No waveforms files (_waveforms.root) or folders here." : b.mode == "rawroot"
+            ? "No _raw.root files or folders here." : "No .analysis files or folders here.";
         Elements lines = { rows[0] };
         for (const auto &line: wrap(none, cw))
             lines.push_back(text(" " + line) | dim);
@@ -1014,7 +1019,8 @@ Element browser_inner(const Model &m, int inner, int height, Hits *hits)
     {
         const std::string none = b.mode == "output" ? "No folders here." : b.mode == "listfile"
             ? "No listfiles (.zip) or folders here." : b.mode == "waveforms"
-            ? "No waveforms files (_waveforms.root) or folders here." : "No .analysis files or folders here.";
+            ? "No waveforms files (_waveforms.root) or folders here." : b.mode == "rawroot"
+            ? "No _raw.root files or folders here." : "No .analysis files or folders here.";
         Elements lines;
         for (const auto &line: wrap(none, cw))
             lines.push_back(text(" " + line) | dim);
@@ -1036,7 +1042,7 @@ Element browser_inner(const Model &m, int inner, int height, Hits *hits)
         bool enabled = true;
         if (label.rfind("Add all ", 0) == 0)
             enabled = addable_count(m) > 0;
-        else if (label.rfind("Add ", 0) == 0 || label == "Choose" || label == "Open")
+        else if (label.rfind("Add ", 0) == 0 || label == "Choose" || label == "Open" || label == "Find its offset")
             enabled = !b.picked.empty();
         // Cyan only for the button you are on (Tab): a primary look without
         // the focus read as selected.
@@ -1053,7 +1059,8 @@ Element browser_inner(const Model &m, int inner, int height, Hits *hits)
     const std::string count = b.mode == "listfile"
         ? plural(files, "listfile") + " here · " + std::to_string(b.picked.size()) + " picked"
         : b.mode == "output" ? plural(b.entries.size() - (b.hasParent ? 1 : 0), "folder") + " here"
-        : b.mode == "waveforms" ? plural(files, "waveforms file") + " here" : plural(files, ".analysis file") + " here";
+        : b.mode == "waveforms" ? plural(files, "waveforms file") + " here"
+        : b.mode == "rawroot" ? plural(files, "_raw.root file") + " here" : plural(files, ".analysis file") + " here";
     low.push_back(text(" " + count) | dim);
 
     Elements all = top;

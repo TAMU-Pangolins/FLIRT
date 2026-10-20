@@ -31,6 +31,11 @@ struct Actions
     // cursor's row, the rows taken off, and whether a conversion runs (sent
     // after every event).
     std::function<void(const InfoRequests &requests)> info;
+    // "Find from a file...": search this file for its dither offset (search
+    // `id`; its events go to apply_find_event), and stop the running search
+    // (its process killed).
+    std::function<void(const std::string &file, uint64_t id)> findDither;
+    std::function<void()> stopFind;
     int width = 80, height = 24;    // the terminal, for scrolling and mouse hits
     // Milliseconds of a steady clock, for double-clicks; unset: steady_clock.
     std::function<int64_t()> clockMs;
@@ -46,6 +51,10 @@ void refresh(Model &m, Actions &actions);
 // Sends the waveform view's pending request, if any (after an event, and
 // after an answer was applied: a tree list asks for a frame).
 void send_waveform_request(Model &m, Actions &actions);
+// "Find from a file...": starts the search asked for (refresh() sends it),
+// stops the running one (Esc in the form, the "stop" beside the field).
+void send_find_request(Model &m, Actions &actions);
+void stop_search(Model &m, Actions &actions);
 // Sends the run information requests (after an event).
 void send_info_requests(Model &m, Actions &actions);
 

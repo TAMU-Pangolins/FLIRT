@@ -117,7 +117,7 @@ Settings load_settings(const std::string &path, std::string *problem)
         // output browser opens in the output folder.
         const auto dirs = j.find("lastDir");
         if (dirs != j.end() && dirs->is_object())
-            for (const char *mode: { "listfile", "analysis", "waveforms" })
+            for (const char *mode: { "listfile", "analysis", "waveforms", "rawroot" })
             {
                 const auto it = dirs->find(mode);
                 if (it != dirs->end() && it->is_string() && absolute(it->get<std::string>()))

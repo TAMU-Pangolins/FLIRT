@@ -1,6 +1,7 @@
 // flirt-tui's file browser: the listfile, analysis and output modes over
 // list_directory/make_directory, and the TUI's own waveforms mode (one
-// *_waveforms.root for the Waveforms tab).
+// *_waveforms.root for the Waveforms tab) and rawroot mode (one official
+// *_raw.root for "Find from a file...").
 
 #include <algorithm>
 
@@ -108,7 +109,9 @@ bool browse(Model &m, const std::string &requested)
             || (b.mode == "analysis" && entry.type == "file" && entry.name.size() > 9
                 && entry.name.compare(entry.name.size() - 9, 9, ".analysis") == 0)
             || (b.mode == "waveforms" && entry.type == "file" && entry.name.size() > 15
-                && entry.name.compare(entry.name.size() - 15, 15, "_waveforms.root") == 0);
+                && entry.name.compare(entry.name.size() - 15, 15, "_waveforms.root") == 0)
+            || (b.mode == "rawroot" && entry.type == "file" && entry.name.size() > 9
+                && entry.name.compare(entry.name.size() - 9, 9, "_raw.root") == 0);
         if (shown)
             b.entries.push_back(entry);
     }
@@ -147,6 +150,8 @@ std::vector<std::string> browser_buttons(const Model &m)
         return { "Choose this folder", "New folder...", "Cancel" };
     if (b.mode == "waveforms")
         return { "Open", "Cancel" };
+    if (b.mode == "rawroot")
+        return { "Find its offset", "Cancel" };
     return { "Choose", "Cancel" };
 }
 
@@ -190,7 +195,7 @@ void browser_activate(Model &m, bool enter)
         else
             b.picked.insert(e.id);
     }
-    else if (b.mode == "analysis" || b.mode == "waveforms")
+    else if (b.mode == "analysis" || b.mode == "waveforms" || b.mode == "rawroot")
     {
         b.picked = { e.id };
         if (enter)
@@ -245,6 +250,13 @@ void browser_ok(Model &m)
                                     [&](const BrowserEntry &x) { return b.picked.count(x.id) > 0; });
         if (e == b.entries.end())
             return;
+        if (b.mode == "rawroot")
+        {
+            // Searched in the background (refresh() starts it).
+            find_dither(m, join_path(b.path, e->name));
+            m.dialog = Dialog::None;
+            return;
+        }
         if (b.mode == "waveforms")
         {
             // Into the Waveforms tab's list, shown there.

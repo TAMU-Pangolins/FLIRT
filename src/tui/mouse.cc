@@ -174,6 +174,9 @@ void main_click(Model &m, const Target *t, int box, bool doubleClick, Actions &a
             m.plotRow = 3;
             choose_range(m, t->index == 1);
             break;
+        case Kind::FindStop:
+            stop_search(m, a);
+            break;
         case Kind::Full:
             if (m.waves.open)
                 set_full(m, !m.fullPlot);

@@ -104,7 +104,7 @@ std::string key_bar_text(const Model &m, int columns, int rows)
         if (b.mode != "output")
             first.push_back("Space pick");
         first.push_back(!onFile ? "Enter open folder" : b.mode == "listfile" ? "Enter add"
-                        : b.mode == "analysis" ? "Enter choose" : "Enter open");
+                        : b.mode == "analysis" ? "Enter choose" : b.mode == "rawroot" ? "Enter find" : "Enter open");
         std::vector<std::string> optional = { "Backspace up" };
         if (b.mode == "listfile")
             optional.push_back("a add all");
@@ -210,9 +210,13 @@ std::string key_bar_text(const Model &m, int columns, int rows)
             case Item::AnalysisArchive: case Item::AnalysisDefault: case Item::AnalysisFile: word = "choose"; break;
             case Item::Compression: word = "next choice"; break;
             case Item::Waveforms: case Item::HitFlags: case Item::Official: case Item::Damaged: word = "tick"; break;
+            case Item::FindDither: word = m.find.running ? "stop" : "find"; break;
             default: break;
         }
         first = { "↑↓ move", "Space/Enter " + word };
+        // A dither offset search running: Esc stops it.
+        if (m.find.running)
+            first = { "↑↓ move", "Esc stop search" };
     }
     else
     {

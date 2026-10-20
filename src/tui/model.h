@@ -44,7 +44,7 @@ struct Options
 enum class Item
 {
     Output, AnalysisArchive, AnalysisDefault, AnalysisFile, Waveforms, HitFlags, Official, Damaged, Compression,
-    Jobs, Threads, Name, Title, Dither
+    Jobs, Threads, Name, Title, Dither, FindDither
 };
 
 // The compression after `name` in compressions(), the first after the last.
@@ -63,7 +63,8 @@ struct BrowserEntry
 };
 
 // The file browser: listfile (add listfiles), analysis (one .analysis file),
-// output (a folder); waveforms (one *_waveforms.root to look at).
+// output (a folder); waveforms (one *_waveforms.root to look at); rawroot
+// (one official *_raw.root, for "Find from a file...").
 struct Browser
 {
     enum class Zone { List, Path, NewFolder, Buttons };
@@ -123,6 +124,19 @@ struct Picker
     std::set<int> checked;
     int cursor = 0;                 // the channel under the cursor
     int button = -1;                // -1: in the grid; 0 All, 1 None, 2 Done
+};
+
+// "Find from a file...": flirt-convert --find-dither-offset --json-events on
+// one official _raw.root, its events applied as they come.
+struct DitherFind
+{
+    bool running = false;
+    uint64_t id = 0;                // this search's number: events of an older one are ignored
+    int percent = 0;
+    bool answered = false;          // its dither-offset event came
+    std::string outbox;             // the file to search next (refresh() starts it)
+    std::string note;               // a one-line note under the field (the run held twice)
+    std::string error;              // why no offset was found
 };
 
 // A plot's ranges: x in samples from 0 to xMax, y in sample values.
@@ -242,6 +256,8 @@ struct Model
         bool changed = false;   // it opened or closed a view, or opened a folder
     } lastPress;
 
+    DitherFind find;
+
     json job;                   // null, or JobManager's job (its display fields)
     uint64_t jobVersion = 0;    // JobManager's version of `job`
     std::string goError;        // why the last Convert did not start, or that the settings are not read or not remembered
@@ -358,6 +374,12 @@ void apply_waveform_answer(Model &m, const json &answer);
 void start_range(Model &m);
 void choose_typical(Model &m);
 bool finish_range(Model &m);
+
+// "Find from a file..." (dither_find_model.cc): the search asked for a file
+// (into the outbox), stopped, and each of its events (with the search's id).
+void find_dither(Model &m, const std::string &file);
+void stop_find(Model &m);
+void apply_find_event(Model &m, uint64_t id, const json &event);
 
 // Play (wave_play.cc). One step (+1 frame, never skipping) when the previous
 // step's answer has been applied and 1000/speed ms have passed since the last

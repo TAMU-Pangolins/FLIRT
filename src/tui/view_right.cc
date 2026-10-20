@@ -189,7 +189,31 @@ Element form_inner(const Model &m, int inner, int rows, Edge edge, Hits *hits)
     textField(Item::Threads, "Threads per conversion ", 3);
     textField(Item::Name, "Experiment name  ", textWidth);
     textField(Item::Title, "Experiment title ", textWidth);
-    textField(Item::Dither, "Dither offset    ", 10);
+    // The dither offset, or while the search runs its progress in place of
+    // the field; under it, in the field's column (it belongs to the field),
+    // "[ From a file… ]", while searching "[ Stop search ]"; then the
+    // search's note or why it found none.
+    const auto &f = m.find;
+    const std::string ditherLabel = "   Dither offset    ";
+    if (f.running)
+        item(Item::Dither, hbox({ text(ditherLabel), text("searching… " + std::to_string(f.percent) + "%"),
+                                  filler() }));
+    else
+        textField(Item::Dither, "Dither offset    ", 10);
+    {
+        auto find = text(f.running ? "[ Stop search ]" : "[ From a file… ]");
+        if (!plainAt(Item::FindDither))
+            find = f.running ? find | color(Teal) : find | bgcolor(Grey);
+        if (f.running)
+            find = hit(find, hits, { Target::Kind::FindStop });
+        item(Item::FindDither, hbox({ text(std::string(static_cast<size_t>(width(ditherLabel)), ' ')), find, filler() }));
+    }
+    if (!f.error.empty())
+        for (const auto &line: wrap(f.error, cw - 2))
+            lines.push_back(text("   " + printable(line)) | color(Color::Red));
+    else if (!f.note.empty())
+        for (const auto &line: wrap(f.note, cw - 2))
+            lines.push_back(text("   " + line) | color(Color::Yellow));
     auto form = vbox(lines) | yframe | size(HEIGHT, EQUAL, rows);
     return lock ? form | dim : form;
 }

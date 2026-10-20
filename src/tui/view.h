@@ -53,6 +53,7 @@ struct Target
         PickerButton,   // its button (`index`: 0 All, 1 None, 2 Done)
         CompressionChoice, // a name on the form's Compression row (`index` in compressions())
         RangeChoice,    // box 2's Y range: 0 typical, 1 own (its input line)
+        FindStop        // the form's "stop" beside the dither offset search
     };
     Kind kind = Kind::Box;
     int index = 0;

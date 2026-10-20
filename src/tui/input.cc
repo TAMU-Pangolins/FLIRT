@@ -142,6 +142,7 @@ bool form_event(Model &m, const Event &e, Actions &a)
     else if (e == Event::End) to(static_cast<int>(items.size()) - 1);
     else if (e == Event::Character(' ')) activate(m, a, false);
     else if (e == Event::Return) activate(m, a, true);
+    else if (e == Event::Escape && m.find.running) stop_search(m, a);
     else if (e == Event::Escape) set_box(m, 2);
     else
         return false;
@@ -335,6 +336,11 @@ void go(Model &m, Actions &a)
     }
     if (busy(m) || !convert_reason(m).empty())
         return;
+    if (m.find.running)
+    {
+        m.goError = "Not started: the dither offset search is still running (Esc in the options stops it)";
+        return;
+    }
     std::string error;
     const auto body = start_body(m, error);
     if (body.is_null())
@@ -355,7 +361,7 @@ void go(Model &m, Actions &a)
     m.runsStarted.clear();
 }
 
-void activate(Model &m, Actions &, bool)
+void activate(Model &m, Actions &a, bool)
 {
     if (busy(m))
         return;
@@ -386,6 +392,21 @@ void activate(Model &m, Actions &, bool)
         case Item::Official: o.official = !o.official; break;
         case Item::Damaged: o.acceptDamaged = !o.acceptDamaged; break;
         case Item::Compression: o.compression = next_compression(o.compression); break;
+        case Item::FindDither:
+            // An official _raw.root, searched in the background; while it
+            // searches the button stops it.
+            if (m.find.running)
+                stop_search(m, a);
+            else
+                open_browser(m, "rawroot");
+            break;
+        case Item::Dither:
+            // The number comes from the search while it runs.
+            if (m.find.running)
+                break;
+            m.editing = true;
+            m.editText = field_value(m, m.focus);
+            break;
         default:
             m.editing = true;
             m.editText = field_value(m, m.focus);
@@ -467,6 +488,26 @@ void refresh(Model &m, Actions &a)
     plan_info(m);
     send_waveform_request(m, a);
     send_info_requests(m, a);
+    send_find_request(m, a);
+}
+
+void stop_search(Model &m, Actions &a)
+{
+    if (!m.find.running)
+        return;
+    stop_find(m);
+    if (a.stopFind)
+        a.stopFind();
+}
+
+void send_find_request(Model &m, Actions &a)
+{
+    if (m.find.outbox.empty())
+        return;
+    const auto file = m.find.outbox;
+    m.find.outbox.clear();
+    if (a.findDither)
+        a.findDither(file, m.find.id);
 }
 
 void send_waveform_request(Model &m, Actions &a)

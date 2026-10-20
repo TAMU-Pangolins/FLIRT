@@ -2,11 +2,11 @@
 # flirt-convert --json-events (job.*), the file browser (files.*), the start
 # options -> flirt-convert's arguments (start_args.*), the waveform view's
 # reader running flirt-waveforms (waveforms.*), the detail's run information
-# running flirt-info (info.*), how
+# running flirt-info (info.*), the dither offset search (dither_find.*), how
 # the helpers start (spawn.*).
 # nlohmann json, pthreads, flirt_common; no Qt, ROOT or mvme.
 find_package(Threads REQUIRED)
-add_library(flirt_ui STATIC job.cc files.cc start_args.cc waveforms.cc info.cc spawn.cc)
+add_library(flirt_ui STATIC job.cc files.cc start_args.cc waveforms.cc info.cc spawn.cc dither_find.cc)
 target_include_directories(flirt_ui PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_include_directories(flirt_ui SYSTEM PUBLIC ${MVME_EXT}/nlohmann-json)
 target_link_libraries(flirt_ui PUBLIC flirt_common Threads::Threads)

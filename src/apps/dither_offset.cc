@@ -494,9 +494,9 @@ bool is_listfile_input(const std::string &path)
 
 int run_find_dither_offset(int argc, char *argv[])
 {
-    // --json-events: events on stdout (README "Events for programs"), on a
-    // copy of stdout while fd 1 points at stderr (as flirt-waveforms: stray
-    // library output cannot corrupt them).
+    // --json-events: events on stdout for flirt-tui's "Find from a file..."
+    // (README "Events for programs"), on a copy of stdout while fd 1 points at
+    // stderr (as flirt-waveforms: stray library output cannot corrupt them).
     bool events = false;
     for (int i = 1; i < argc; ++i)
         events = events || std::string(argv[i]) == "--json-events";

@@ -131,7 +131,7 @@ const std::vector<Item> &form_items()
     static const std::vector<Item> items = {
         Item::Output, Item::AnalysisArchive, Item::AnalysisDefault, Item::AnalysisFile, Item::Waveforms,
         Item::HitFlags, Item::Official, Item::Damaged, Item::Compression, Item::Jobs, Item::Threads, Item::Name,
-        Item::Title, Item::Dither };
+        Item::Title, Item::Dither, Item::FindDither };
     return items;
 }
 
