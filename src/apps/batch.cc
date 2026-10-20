@@ -19,6 +19,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <spawn.h>
@@ -34,6 +35,7 @@
 #include "common/utf8.h"
 #include "flirt/listfile.h"
 #include "flirt_version.h"
+#include "batch_text.h"
 #include "progress.h"
 
 extern char **environ;
@@ -121,6 +123,10 @@ struct Run
     std::string eventPhase; // --json-events: the last progress event's phase and percent
     int eventPercent = -1;
     Clock::time_point eventTime;
+    std::vector<std::string> otherLines;    // ended badly: the child's lines the note does not hold
+    std::string killedNote; // converted, then killed: said in its block
+    RunBlock block;         // what was said about it (batch_text.h)
+    bool said = false;      // its block was printed
 };
 
 const char *const Results[] = { "converted", "failed", "unsupported", "interrupted", "not-started" };
@@ -412,8 +418,8 @@ std::string read_log(FILE *log)
     return text;
 }
 
-// A line flirt-convert prints on stderr, and with --json-events sends as a
-// message event (README "Events for programs").
+// A message event's text (--json-events; README "Events for programs"): the
+// lines flirt-convert once printed on stderr, unchanged.
 using Say = std::function<void(const std::string &)>;
 
 // A child has exited: pass its output on as messages, prefixed with the run
@@ -433,13 +439,25 @@ void finish(Run &run, int status, bool stopping, const Options &opt, const Say &
 
     // The note: the first error, refusal or failed check the child printed.
     std::string reason, line;
+    std::vector<std::string> lines;
     while (std::getline(output, line))
     {
         say(run.runId + ": " + line);
+        lines.push_back(line);
         if (reason.empty()
             && (line.rfind("error: ", 0) == 0 || line.rfind("refused: ", 0) == 0
                 || (line.size() > 3 && line.compare(0, 3, "  I") == 0 && std::isdigit(static_cast<unsigned char>(line[3])))))
             reason = line.substr(line.find_first_not_of(' '));
+    }
+    // For a run that ends badly: what the note leaves out, e.g. a second
+    // failed check (its block's why rows).
+    run.otherLines.clear();
+    for (const auto &l: lines)
+    {
+        const auto text = l.substr(std::min(l.size(), l.find_first_not_of(' ')));
+        if (!text.empty() && text != reason && text != "failed checks:" && text.rfind("nothing was published", 0) != 0
+            && text != "interrupted: nothing was published")
+            run.otherLines.push_back(text);
     }
 
     if (WIFEXITED(status))
@@ -499,8 +517,9 @@ void finish(Run &run, int status, bool stopping, const Options &opt, const Say &
         {
             run.result = "converted";
             run.note = "status " + report;
-            say(run.runId + ": killed by " + signal_name(sig)
-                + " after it had published everything; its outputs and report are complete");
+            run.killedNote = "killed by " + signal_name(sig)
+                + " after it had published everything; its outputs and report are complete";
+            say(run.runId + ": " + run.killedNote);
         }
         else if (!present.empty())
         {
@@ -549,6 +568,86 @@ void say_result(const Run &run, const Say &say)
     say(text.str());
     if (!f.todo.empty())
         say(run.runId + ": to do: " + f.todo);
+}
+
+// "a, b and c".
+std::string listed(const std::vector<std::string> &items)
+{
+    std::string text;
+    for (size_t i = 0; i < items.size(); ++i)
+        text += (i == 0 ? "" : i + 1 == items.size() ? " and " : ", ") + items[i];
+    return text;
+}
+
+// What is said about a run, from its result, its report (converted) or its
+// failure (common/failures.h); README "What flirt-convert prints".
+RunBlock block_of(const Run &run, const Options &opt)
+{
+    if (run.result == "converted")
+    {
+        RunBlock b;
+        try
+        {
+            std::ifstream in(report_path(opt, run));
+            b = converted_block(run.runId, run.seconds, json::parse(in));
+        }
+        catch (const std::exception &)
+        {
+            b = RunBlock{ run.runId, "✓", Tone::Ok, "converted", " in " + elapsed_text(run.seconds), {}, 0, {} };
+            add_warning(b, "its report " + run.runId + ".flirt.json cannot be read");
+            b.attention = "its report cannot be read";
+        }
+        if (!run.killedNote.empty())
+            b.rows.push_back({ "note", run.killedNote, run.killedNote });
+        return b;
+    }
+
+    RunBlock b;
+    b.runId = run.runId;
+    auto row = [&](const std::string &label, const std::string &text)
+    {
+        if (!text.empty())
+            b.rows.push_back({ label, text, label == "note" ? text : std::string() });
+    };
+    const auto f = failure_of(run);
+    if (run.result == "not-started")
+    {
+        b.mark = "–";
+        b.tone = Tone::Plain;
+        b.outcome = "not started";
+        b.rest = run.note.empty() ? "" : ": " + run.note;
+        b.attention = b.outcome + (run.note.empty() ? "" : ": " + run.note);
+        return b;
+    }
+
+    // Failed, unsupported, interrupted: the plain words, then what the note
+    // leaves out (a second failed check, say), at most a few lines.
+    const bool interrupted = run.result == "interrupted";
+    b.mark = interrupted ? "!" : "✗";
+    b.tone = interrupted ? Tone::Warning : Tone::Error;
+    b.outcome = interrupted ? "not converted" : run.result;
+    const bool incomplete = run.note.find("without their report") != std::string::npos;
+    b.rest = (run.result == "failed" ? " in " + elapsed_text(run.seconds) : std::string()) + ": " + f.headline
+        + (run.result == "failed" && !incomplete ? "; nothing was published" : "");
+    row("why", f.why + (f.check.empty() ? "" : (f.why.empty() ? "" : " ") + std::string("(check ") + f.check + ")"));
+    const size_t shown = 3;
+    for (size_t i = 0; i < run.otherLines.size() && i < shown; ++i)
+    {
+        const auto &l = run.otherLines[i];
+        const auto colon = l.find(": ");
+        // A failed check's line "<check>: <result>: <detail>".
+        if (l.size() > 2 && l[0] == 'I' && std::isdigit(static_cast<unsigned char>(l[1])) && colon != std::string::npos
+            && l.find(": ", colon + 2) != std::string::npos)
+            row("why", plain_check_detail(l.substr(l.find(": ", colon + 2) + 2)) + " (check " + l.substr(0, colon) + ")");
+        else
+            row("why", l);
+    }
+    if (run.otherLines.size() > shown)
+        row("why", "(" + std::to_string(run.otherLines.size() - shown) + " more lines: flirt-convert --json-events"
+                   " shows them)");
+    row("to do", f.todo);
+    b.attention = f.headline;
+    return b;
 }
 
 // The summary's "options" (also the --json-events start event's).
@@ -714,14 +813,19 @@ int run_batch(int argc, char *argv[])
     }
     events.send("start", { {"flirt", build_identity()}, {"options", options_json(opt)} });
 
-    // From here on the text goes to stderr through the display, above its
-    // live line, and with --json-events each line is also a message event: a
-    // line about one run ("<runId>: ...") carries its run ID and the text
-    // after that prefix.
+    // From here on the human text goes to stderr through the display
+    // (batch_text.h: a block per run, the end), and with --json-events the
+    // message events carry the lines flirt-convert once printed on stderr,
+    // unchanged: a line about one run ("<runId>: ...") carries its run ID and
+    // the text after that prefix.
     ProgressDisplay display;
+    const Painter paint(display.colour());
+    // With --json-events the blocks are not wrapped, each row one line:
+    // flirt-tui wraps them at its own width. Else the terminal's width, 80 in
+    // a log.
+    auto text_width = [&] { return opt.jsonEvents ? std::numeric_limits<size_t>::max() / 2 : display.width(); };
     const Say say = [&](const std::string &text)
     {
-        display.line(text);
         if (!events.on())
             return;
         const Run *about = nullptr;
@@ -732,7 +836,35 @@ int run_batch(int argc, char *argv[])
         events.send("message", { {"runId", about ? json(about->runId) : json(nullptr)},
                                  {"text", valid_utf8(about ? text.substr(about->runId.size() + 2) : text)} });
     };
-    const Say &tell = say;
+    // A line said in both: the same words on stderr and in a message event.
+    const Say tell = [&](const std::string &text)
+    {
+        display.line(text);
+        say(text);
+    };
+    // A single run: notes stay in the blocks; otherwise the end says them,
+    // once for the runs that share one.
+    const bool notesInBlocks = runs.size() == 1;
+    // A run's block, printed when it ends (never mixed with another's).
+    auto print_block = [&](Run &run)
+    {
+        run.block = block_of(run, opt);
+        run.said = true;
+        display.lines(render_block(run.block, notesInBlocks, paint, text_width()));
+    };
+
+    // The folder said once: on a terminal $HOME as ~ (printable_text: the
+    // folders above it may hold any bytes).
+    auto shown_path = [&](const std::string &path)
+    {
+        const char *home = std::getenv("HOME");
+        const std::string h = home ? home : "";
+        if (display.terminal() && h.size() > 1 && (path == h || path.rfind(h + "/", 0) == 0))
+            return printable_text("~" + path.substr(h.size()));
+        return printable_text(path);
+    };
+    display.lines({ "Converting " + std::to_string(runs.size()) + (runs.size() == 1 ? " run" : " runs") + " into "
+                    + shown_path(opt.outDir), "" });
 
     // True if the run is to be converted.
     auto classify = [&](Run &run) -> bool
@@ -747,6 +879,7 @@ int run_batch(int argc, char *argv[])
             run.note = "refused: " + refusal;
             say(run.runId + ": " + run.note);
             say_result(run, say);
+            print_block(run);
             return false;
         }
 
@@ -874,6 +1007,7 @@ int run_batch(int argc, char *argv[])
                 auto &run = **it;
                 finish(run, status, stopping, opt, say);
                 say_result(run, say);
+                print_block(run);
                 events.send("result", result_json(opt, run));
                 it = running.erase(it);
             }
@@ -887,6 +1021,9 @@ int run_batch(int argc, char *argv[])
             queue.pop_front();
 
             say(run.runId + ": converting " + run.input);
+            // A log: a line when each run starts (a terminal has the live line).
+            if (!display.terminal())
+                display.line("● " + run.runId + "   converting");
             if (!started)
             {
                 started = true;
@@ -903,6 +1040,7 @@ int run_batch(int argc, char *argv[])
                 run.result = "failed";
                 say(run.runId + ": failed: " + reason_text(failure_of(run)));
                 say(run.runId + ": to do: " + failure_of(run).todo);
+                print_block(run);
                 events.send("result", result_json(opt, run));
             }
         }
@@ -941,6 +1079,27 @@ int run_batch(int argc, char *argv[])
 
     const double wall = seconds_since(t0);
     display.finish();
+
+    // The end (README "What flirt-convert prints"): the counts in words, the
+    // runs that need attention, the notes said once.
+    std::vector<const RunBlock *> blocks;
+    for (auto &run: runs)
+    {
+        if (!run.said)
+            run.block = block_of(run, opt);
+        blocks.push_back(&run.block);
+    }
+    const std::pair<size_t, const char *> counted[] = {
+        { totals["converted"], "converted" },
+        { totals["interrupted"], "not converted" }, { totals["unsupported"], "unsupported" },
+        { totals["failed"], "failed" }, { totals["not-started"], "not started" } };
+    std::string counts;
+    for (const auto &[n, word]: counted)
+        if (n)
+            counts += (counts.empty() ? "" : ", ") + std::to_string(n) + " " + word;
+    counts = (counts.empty() ? std::string("no runs") : counts) + " in " + elapsed_text(wall)
+        + (stoppedBy ? "; stopped by " + signal_name(stoppedBy) : "") + ".";
+    display.lines(render_end(blocks, counts, runs.size(), notesInBlocks, paint, text_width()));
 
     auto summary = make_summary(opt, runs, totals, wall, exitCode, stoppedBy);
     if (!opt.summaryPath.empty() && !write_summary(opt, summary, tell) && exitCode == 0)
