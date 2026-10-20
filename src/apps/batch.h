@@ -6,7 +6,9 @@
 namespace flirt
 {
 
-// The batch parent of flirt-convert: `flirt-convert <input>... -o <outdir> ...`.
+// The batch parent of flirt-convert: `flirt-convert <input>... -o <outdir> ...`,
+// or with `--watch <dir>` instead of inputs the watch (watch.h), which converts
+// the runs mvme finishes in <dir> until a stop signal.
 // Checks the arguments, skips runs already converted, refuses runs with
 // existing outputs, then converts each remaining listfile in a child process
 // (`flirt-convert --convert-one ...`), at most -j at a time. Prints a block

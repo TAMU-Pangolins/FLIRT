@@ -6,6 +6,10 @@
 // initializes ROOT. Outputs are never deleted or overwritten: runs already
 // converted with the same inputs, options and FLIRT build are skipped, runs
 // with any other existing outputs are refused.
+//
+// With --watch <dir> instead of inputs, the same loop runs until a stop
+// signal and takes its runs from the watch (watch.h): each archive in <dir>
+// that mvme has finished writing, once.
 
 #include <QCryptographicHash>
 #include <RVersion.h>
@@ -24,6 +28,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <spawn.h>
 #include <sstream>
@@ -41,6 +46,7 @@
 #include "flirt_version.h"
 #include "batch_text.h"
 #include "progress.h"
+#include "watch.h"
 
 extern char **environ;
 
@@ -69,6 +75,8 @@ void usage(const char *argv0)
               << " [--summary <file.json>]"
               << " [--dither-offset <N>] [--threads <T>] [--no-waveforms] [--official-waveform-branches]"
               << " [--accept-damaged-input] [--json-events]\n"
+              << "       " << argv0 << " --watch <dir> -o <outdir> [--settle <S>] [-j N] [--summary <file.json>]"
+              << " [the conversion options above]\n"
               << "\n"
               << "Converts mvme MVLC listfile archives into <runId>_raw.root, <runId>_histos.root,\n"
               << "<runId>_waveforms.root (if a module records MDPP samples) and a\n"
@@ -102,11 +110,17 @@ void usage(const char *argv0)
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
               << "  --json-events       stdout: one JSON event per line for programs, instead of\n"
-              << "                      the summary lines\n"
+              << "                      the summary lines (not with --watch)\n"
+              << "  --watch <dir>       instead of inputs: convert each run mvme finishes writing in\n"
+              << "                      <dir> (*.zip, not recursive), until Ctrl-C, SIGTERM,\n"
+              << "                      SIGHUP or SIGPIPE; <outdir> must be outside <dir>\n"
+              << "  --settle <S>        with --watch: check a file once unchanged for S seconds,\n"
+              << "                      1 to 3600 (default: 10)\n"
               << "\n"
               << "Exit codes: 0 all converted or skipped, 1 a conversion failed, outputs exist or\n"
               << "the --summary file could not be written, 2 usage, 3 unsupported input,\n"
-              << "130 interrupted.\n";
+              << "130 interrupted. A watch ends with 0, 1 or 3 by each file's last result (never\n"
+              << "130), or 1 if its --summary file could not be written.\n";
 }
 
 struct Options
@@ -121,6 +135,9 @@ struct Options
     bool officialWaveformBranches = false;
     bool acceptDamagedInput = false;
     bool jsonEvents = false;    // --json-events: stdout carries JSON events only
+    bool watch = false;     // --watch: watchDir instead of inputs
+    std::string watchDir;
+    unsigned settleSeconds = 10;
 };
 
 // Why a run's existing outputs are not what converting it now would produce:
@@ -151,6 +168,7 @@ struct Run
     bool convert = false;   // this batch converts it (not skipped or refused)
     uint64_t bytes = 0;     // input size, for the progress estimate
     uint64_t key = 0;       // the launch's number, for the progress display
+    uint64_t watchId = 0;   // the watch's id of the file (Watcher::done)
     bool diskFull = false;  // the child said "No space left on device"
     std::string eventPhase; // --json-events: the last progress event's phase and percent
     int eventPercent = -1;
@@ -231,8 +249,9 @@ void add_list(const std::string &listFile, std::vector<std::string> &inputs)
 Options parse_args(int argc, char *argv[])
 {
     Options opt;
-    // Expanded after all options are read.
+    // Expanded after all options are read, since --watch takes no inputs.
     std::vector<std::pair<bool, std::string>> sources;    // (a --list file, path)
+    bool settleGiven = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -259,6 +278,19 @@ Options parse_args(int argc, char *argv[])
             opt.threads = static_cast<unsigned>(threads);
         }
         else if (arg == "--list") sources.emplace_back(true, value());
+        else if (arg == "--watch")
+        {
+            opt.watch = true;
+            opt.watchDir = value();
+        }
+        else if (arg == "--settle")
+        {
+            auto settle = parse_number(arg, value());
+            if (settle < 1 || settle > 3600)
+                throw usage_error("--settle must be between 1 and 3600");
+            opt.settleSeconds = static_cast<unsigned>(settle);
+            settleGiven = true;
+        }
         else if (arg == "--summary") opt.summaryPath = value();
         else if (arg == "--dither-offset")
         {
@@ -272,15 +304,27 @@ Options parse_args(int argc, char *argv[])
         else sources.emplace_back(false, arg);
     }
 
-    for (const auto &[isList, path]: sources)
+    if (opt.watch)
     {
-        if (isList)
-            add_list(path, opt.inputs);
-        else
-            add_input(path, opt.inputs);
+        if (!sources.empty())
+            throw usage_error("--watch takes no other inputs");
+        if (opt.jsonEvents)
+            throw usage_error("--json-events does not work with --watch");
     }
-    if (opt.inputs.empty())
-        throw usage_error("no inputs", true);
+    else
+    {
+        if (settleGiven)
+            throw usage_error("--settle needs --watch");
+        for (const auto &[isList, path]: sources)
+        {
+            if (isList)
+                add_list(path, opt.inputs);
+            else
+                add_input(path, opt.inputs);
+        }
+        if (opt.inputs.empty())
+            throw usage_error("no inputs", true);
+    }
 
     struct stat st;
     if (opt.outDir.empty())
@@ -295,6 +339,23 @@ Options parse_args(int argc, char *argv[])
     // folder's); the folders above it may hold any name.
     if (const auto refusal = name_refusal(own_name(opt.outDir)); !refusal.empty() && opt.outDir != "/")
         throw usage_error("output directory " + refusal);
+
+    if (opt.watch)
+    {
+        if (stat(opt.watchDir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+            throw usage_error("directory to watch does not exist: " + opt.watchDir);
+        if (!realpath(opt.watchDir.c_str(), buf))
+            throw usage_error("cannot resolve " + opt.watchDir);
+        opt.watchDir = buf;
+        // The watch writes nothing in mvme's folder: the outputs and the
+        // private .flirt-* directories go elsewhere (real paths compared).
+        const bool inside = opt.watchDir == "/" || opt.outDir.rfind(opt.watchDir + "/", 0) == 0;
+        if (opt.outDir == opt.watchDir || inside)
+            throw usage_error("the output directory " + opt.outDir
+                              + (opt.outDir == opt.watchDir ? " is the watched directory" : " is inside the watched directory "
+                                 + opt.watchDir)
+                              + "; the watch writes nothing there: choose an output directory outside it");
+    }
 
     if (!opt.summaryPath.empty())
         check_name("--summary", opt.summaryPath);
@@ -912,7 +973,9 @@ json options_json(const Options &opt)
              {"ditherOffset", opt.ditherOffset},
              {"noWaveforms", opt.noWaveforms},
              {"officialWaveformBranches", opt.officialWaveformBranches},
-             {"acceptDamagedInput", opt.acceptDamagedInput} };
+             {"acceptDamagedInput", opt.acceptDamagedInput},
+             {"watch", opt.watch ? json(opt.watchDir) : json(nullptr)},
+             {"settleSeconds", opt.watch ? json(opt.settleSeconds) : json(nullptr)} };
 }
 
 // A run in the summary's "results" (also a --json-events result event).
@@ -1099,13 +1162,16 @@ int run_batch(int argc, char *argv[])
         display.line(text);
         say(text);
     };
-    // A single run: notes stay in the blocks; otherwise the end says them,
-    // once for the runs that share one.
-    const bool notesInBlocks = runs.size() == 1;
+    // A single run, or a watch: notes stay in the blocks; otherwise the end
+    // says them, once for the runs that share one.
+    const bool notesInBlocks = opt.watch || runs.size() == 1;
     // A run's block, printed when it ends (never mixed with another's).
     auto print_block = [&](Run &run)
     {
         run.block = block_of(run, opt);
+        if (opt.watch && run.result == "failed")
+            run.block.rows.push_back({ "note", "not retried unless the file changes (or the watch is restarted)",
+                                       "not retried unless the file changes (or the watch is restarted)" });
         run.said = true;
         display.lines(render_block(run.block, notesInBlocks, paint, text_width()));
     };
@@ -1120,8 +1186,9 @@ int run_batch(int argc, char *argv[])
             return printable_text("~" + path.substr(h.size()));
         return printable_text(path);
     };
-    display.lines({ "Converting " + std::to_string(runs.size()) + (runs.size() == 1 ? " run" : " runs") + " into "
-                    + shown_path(opt.outDir), "" });
+    if (!opt.watch)
+        display.lines({ "Converting " + std::to_string(runs.size()) + (runs.size() == 1 ? " run" : " runs") + " into "
+                        + shown_path(opt.outDir), "" });
 
     // Skip what is up to date, refuse other existing outputs; true if the run
     // is to be converted.
@@ -1178,7 +1245,8 @@ int run_batch(int argc, char *argv[])
         return false;
     };
 
-    // The runs to launch, in input order.
+    // The runs to launch, in order: the batch's in input order; the watch's
+    // in natural order.
     std::deque<Run *> queue;
     for (auto &run: runs)
         if (classify(run))
@@ -1218,6 +1286,15 @@ int run_batch(int argc, char *argv[])
                                   {"percent", percent < 0 ? json(nullptr) : json(percent)} });
     };
 
+    std::unique_ptr<Watcher> watcher;
+    if (opt.watch)
+    {
+        tell("watching " + opt.watchDir + " for finished runs (checked after "
+             + std::to_string(opt.settleSeconds) + " s unchanged); outputs in " + opt.outDir
+             + "; stop with Ctrl-C");
+        watcher = std::make_unique<Watcher>(opt.watchDir, opt.settleSeconds);
+    }
+
     // At most opt.jobs children at a time.
     bool stopping = false;
     int stoppedBy = 0;
@@ -1225,6 +1302,8 @@ int run_batch(int argc, char *argv[])
     bool started = false;
     Clock::time_point firstStart;
     uint64_t launches = 0;
+    const auto scanPeriod = std::chrono::seconds(2);
+    auto nextScan = Clock::now();
 
     auto handle_signal = [&](int sig)
     {
@@ -1281,6 +1360,16 @@ int run_batch(int argc, char *argv[])
         return sig > 0;
     };
 
+    // The watch is done with a file's attempt.
+    auto handled = [&](const Run &run)
+    {
+        if (!opt.watch)
+            return;
+        watcher->done(run.watchId);
+        if (run.result == "failed")
+            say(run.runId + ": not retried unless the file changes (or the watch is restarted)");
+    };
+
     while (true)
     {
         while (wait_signal(0)) { }
@@ -1298,10 +1387,55 @@ int run_batch(int argc, char *argv[])
                 say_result(run, say);
                 print_block(run);
                 events.send("result", result_json(opt, run));
+                handled(run);
                 it = running.erase(it);
             }
             else
                 ++it;
+        }
+
+        if (opt.watch && !stopping && Clock::now() >= nextScan)
+        {
+            std::vector<std::string> lines;
+            std::vector<Watcher::Ready> ready;
+            std::vector<uint64_t> gone;
+            watcher->scan(Clock::now(), lines, ready, gone);
+            nextScan = Clock::now() + scanPeriod;
+            for (const auto &line: lines)
+                tell(line);
+
+            // Queued files that disappeared; a running one fails its I5.
+            for (auto id: gone)
+                for (auto it = queue.begin(); it != queue.end(); ++it)
+                    if ((*it)->watchId == id)
+                    {
+                        (*it)->result = "not-started";
+                        (*it)->note = "the file disappeared before it was converted";
+                        say((*it)->runId + ": not converted: the file disappeared");
+                        (*it)->block = RunBlock{ (*it)->runId, "!", Tone::Warning, "not converted",
+                                                 ": the file disappeared", {}, 0, false, "the file disappeared" };
+                        (*it)->said = true;
+                        display.lines(render_block((*it)->block, notesInBlocks, paint, text_width()));
+                        queue.erase(it);
+                        break;
+                    }
+
+            for (const auto &file: ready)
+            {
+                runs.emplace_back();
+                auto &run = runs.back();
+                run.input = file.path;
+                run.runId = run_id_from_path(file.path);
+                run.watchId = file.id;
+                if (classify(run))
+                {
+                    auto pos = std::find_if(queue.begin(), queue.end(),
+                                            [&](const Run *q) { return natural_less(run.runId, q->runId); });
+                    queue.insert(pos, &run);
+                }
+                else
+                    watcher->done(run.watchId);
+            }
         }
 
         while (!stopping && running.size() < opt.jobs && !queue.empty())
@@ -1331,17 +1465,23 @@ int run_batch(int argc, char *argv[])
                 say(run.runId + ": to do: " + failure_of(run).todo);
                 print_block(run);
                 events.send("result", result_json(opt, run));
+                handled(run);
             }
         }
 
-        if (running.empty() && (stopping || queue.empty()))
+        if (running.empty() && (stopping || (!opt.watch && queue.empty())))
             break;
 
         show_progress();
         // A quarter second while conversions run, so that a log shows each
         // tenth of a short run (a child writes its progress at most every
-        // 0.5 s).
+        // 0.5 s); an idle watch sleeps until its next scan.
         long wait = 250000000;
+        if (opt.watch && !stopping)
+        {
+            const auto untilScan = std::chrono::duration_cast<std::chrono::nanoseconds>(nextScan - Clock::now()).count();
+            wait = std::max(0L, running.empty() ? static_cast<long>(untilScan) : std::min(wait, static_cast<long>(untilScan)));
+        }
         wait_signal(wait);
     }
 
@@ -1359,7 +1499,21 @@ int run_batch(int argc, char *argv[])
         ++totals[run.result];
 
     int exitCode = 0;
-    if (stopping)
+    if (opt.watch)
+    {
+        // A stop is the watch's normal end: each file's last result counts.
+        std::map<std::string, std::string> last;
+        for (const auto &run: runs)
+            last[run.input] = run.result;
+        auto any = [&](const char *result) {
+            return std::any_of(last.begin(), last.end(), [&](const auto &entry) { return entry.second == result; });
+        };
+        if (any("failed") || any("outputs-exist"))
+            exitCode = 1;
+        else if (any("unsupported"))
+            exitCode = 3;
+    }
+    else if (stopping)
         exitCode = 130;
     else if (totals["failed"] || totals["outputs-exist"])
         exitCode = 1;
