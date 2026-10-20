@@ -4,6 +4,8 @@ add_library(flirt STATIC
     vme_config.cc
     analysis_config.cc
     extract.cc
+    pipeline.cc
+    listfile_scan.cc
     library_log.cc
     )
 target_include_directories(flirt PUBLIC ${CMAKE_SOURCE_DIR}/src
