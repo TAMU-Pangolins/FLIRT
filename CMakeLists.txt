@@ -43,6 +43,7 @@ endif()
 
 include(cmake/mvme_parts.cmake)
 include(cmake/mvme_root_event.cmake)
+include(cmake/env_files.cmake)
 
 # Build identity for the conversion report. FLIRT's is regenerated on every
 # build (flirt_version.h), mvme's pinned sources only change on a reconfigure.
