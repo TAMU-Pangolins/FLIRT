@@ -116,8 +116,8 @@ Failure failed_check(const std::string &check, const std::string &result, const 
     return f;
 }
 
-// "refused: <what>": what flirt-convert does not support (README "Input
-// integrity checks", the last paragraph).
+// "refused: <what>": what flirt-convert does not support (docs/usage.md
+// "Input integrity checks", the last paragraph).
 Failure unsupported(const std::string &what, FailureFor where)
 {
     Failure f;

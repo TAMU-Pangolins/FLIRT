@@ -10,7 +10,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 fail() { echo "error: $*" >&2; exit 1; }
 
-[ "$(uname -s)" = Darwin ] || fail "this script is for macOS; on Linux see README (Building)"
+[ "$(uname -s)" = Darwin ] || fail "this script is for macOS; on Linux see docs/building.md"
 
 # ROOT: root-config on the caller's PATH, else $ROOTSYS/bin.
 rootconfig=$(command -v root-config || true)

@@ -160,8 +160,8 @@ void labeled(std::vector<Line> &out, int inner, const std::string &label, const 
     }
 }
 
-// The run information from flirt-info --json's fields (README "Run
-// information"), as the details show it: Run, Length, Events, Rate and its
+// The run information from flirt-info --json's fields (docs/usage.md
+// "flirt-info"), as the details show it: Run, Length, Events, Rate and its
 // graph, Lost, mvme, MVLC, Modules; then flirt-info's other details in its own
 // words, its warnings and its note.
 void run_info_lines(const Model &m, const std::string &path, int inner, std::vector<Line> &out)
@@ -613,7 +613,7 @@ std::string command_intro(const std::string &host)
 
 LogStyle log_style(const std::string &line, const LogStyle &before)
 {
-    // flirt-convert prints a block per run (README "What
+    // flirt-convert prints a block per run (docs/usage.md "What
     // flirt-convert prints"): a header "<mark> <run>   <outcome>" by its mark,
     // the run's name blue; rows "    <label>   <text>" (warning, note,
     // quality, lost yellow; why and to do in their header's level); wrapped

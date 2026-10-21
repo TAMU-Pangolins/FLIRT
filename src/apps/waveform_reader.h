@@ -2,7 +2,7 @@
 #define FLIRT_APPS_WAVEFORM_READER_H
 
 // flirt-waveforms's reading of a <runId>_waveforms.root (docs/design.md,
-// "TUI", "Waveform view"; README "Waveforms" for the layout). One
+// "TUI", "Waveform view"; docs/usage.md "Waveforms" for the layout). One
 // request in, one answer out, both JSON; every request names its file, and
 // the indexes of the open file are kept. A frame is a run of consecutive
 // entries with the same `event`: the writer fills one module's traces of one
@@ -16,8 +16,8 @@
 // trace carries its `age` (0 for the frame at position), oldest first.
 //
 // The tree list also gives each tree's typical y range
-// and trace length, from its first 20,000 traces (README "Events for
-// programs"); flirt-tui rounds the range.
+// and trace length, from its first 20,000 traces (docs/usage.md "Events
+// for programs"); flirt-tui rounds the range.
 
 #include <cstdint>
 #include <map>

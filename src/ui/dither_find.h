@@ -3,8 +3,8 @@
 
 // flirt-tui's "Find from a file..." (docs/design.md, "TUI"): runs
 // `<prefix>/bin/flirt-convert --find-dither-offset --json-events <file>` and
-// hands each event line on (README "Events for programs"), as InfoReader runs
-// flirt-info (info.h).
+// hands each event line on (docs/usage.md "Events for programs"), as
+// InfoReader runs flirt-info (info.h).
 
 #include <functional>
 #include <mutex>

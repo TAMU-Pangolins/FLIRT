@@ -19,7 +19,8 @@
 namespace flirt
 {
 
-// Draws searched: 2^32 (about a minute, README "Dither offset").
+// Draws searched: 2^32 (about a minute, docs/usage.md "Dither
+// offset").
 constexpr uint64_t DitherSearchDraws = uint64_t(1) << 32;
 
 // What an official _raw.root tells about its dither offset.

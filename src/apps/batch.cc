@@ -114,7 +114,7 @@ void usage(const char *argv0)
               << "                      the same run); the report records the offset and the file\n"
               << "  --find-dither-offset <official _raw.root>...\n"
               << "                      instead of converting: print each file's dither offset\n"
-              << "                      (README, \"Dither offset\"; about a minute at most)\n"
+              << "                      (docs/usage.md, \"Dither offset\"; about a minute at most)\n"
               << "  --threads T         threads per conversion for ROOT compression and waveform\n"
               << "                      decoding; with 1, 2, 4 and 8 threads compare finds the\n"
               << "                      outputs IDENTICAL (tested; the bytes on disk can differ)\n"
@@ -130,7 +130,8 @@ void usage(const char *argv0)
               << "                      differs from files made without this option\n"
               << "  --compression NAME  the ROOT files' compression: " << compression_names() << "\n"
               << "                      (default: " << default_compression().name << ", the only one whose files\n"
-              << "                      are identical to official ones; README, \"Compression\")\n"
+              << "                      are identical to official ones; docs/usage.md,\n"
+              << "                      \"Compression\")\n"
               << "  --accept-damaged-input\n"
               << "                      convert and publish even if integrity checks fail; the\n"
               << "                      report lists the failed checks\n"
@@ -540,8 +541,8 @@ Mismatch mismatch(const Options &opt, const Run &run)
                        "only a conversion with status \"ok\" is skipped");
 
     // The same build: FLIRT's describe string, mvme, ROOT and the platform;
-    // for a development build also the same executable (README, "Skipping
-    // and refusing").
+    // for a development build also the same executable (docs/usage.md,
+    // "Skipping and refusing").
     const auto build = build_identity();
     for (const char *key: { "version", "mvme", "root", "platform" })
         if (at(("/flirt/" + std::string(key)).c_str()) != build[key])
@@ -870,8 +871,8 @@ std::string read_log(FILE *log)
     return text;
 }
 
-// A message event's text (--json-events; README "Events for programs"): the
-// lines flirt-convert once printed on stderr, unchanged.
+// A message event's text (--json-events; docs/usage.md "Events for
+// programs"): the lines flirt-convert once printed on stderr, unchanged.
 using Say = std::function<void(const std::string &)>;
 
 // A child has exited: pass its output on as messages, prefixed with the run
@@ -1033,7 +1034,7 @@ std::string listed(const std::vector<std::string> &items)
 }
 
 // What is said about a run, from its result, its report (converted) or its
-// failure (common/failures.h); README "What flirt-convert prints".
+// failure (common/failures.h); docs/usage.md "What flirt-convert prints".
 RunBlock block_of(const Run &run, const Options &opt)
 {
     if (run.result == "converted")
@@ -1221,9 +1222,9 @@ bool write_summary(const Options &opt, const json &summary, const Say &tell)
     return ok;
 }
 
-// flirt-convert --json-events (README "Events for programs"): one compact
-// JSON object per line on stdout, written and flushed when it happens, with
-// invalid UTF-8 replaced (common/utf8.h).
+// flirt-convert --json-events (docs/usage.md "Events for programs"): one
+// compact JSON object per line on stdout, written and flushed when it
+// happens, with invalid UTF-8 replaced (common/utf8.h).
 class Events
 {
     public:
@@ -1826,8 +1827,8 @@ int run_batch(int argc, char *argv[])
     const double wall = seconds_since(t0);
     display.finish();
 
-    // The end (README "What flirt-convert prints"): the counts in words, the
-    // runs that need attention, the notes said once.
+    // The end (docs/usage.md "What flirt-convert prints"): the counts in
+    // words, the runs that need attention, the notes said once.
     std::vector<const RunBlock *> blocks;
     for (auto &run: runs)
     {

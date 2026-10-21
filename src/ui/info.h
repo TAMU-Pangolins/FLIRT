@@ -4,7 +4,7 @@
 // A listfile's run information for flirt-tui's details (docs/design.md,
 // "TUI" and "Run information"): runs
 // <prefix>/bin/flirt-info --json once per listfile and returns its JSON line
-// (README "Run information (flirt-info)").
+// (docs/usage.md "flirt-info").
 
 #include <mutex>
 #include <nlohmann/json.hpp>

@@ -123,7 +123,7 @@ json WaveformReader::ask(const json &request)
     }
 
     // A file name that is not valid UTF-8 cannot be a JSON string: its bytes
-    // go as hex in "fileBytes" too (README "Events for programs").
+    // go as hex in "fileBytes" too (docs/usage.md "Events for programs").
     auto sent = request;
     const auto file = request.is_object() ? request.value("file", json()) : json();
     if (file.is_string() && valid_utf8(file.get<std::string>()) != file.get<std::string>())

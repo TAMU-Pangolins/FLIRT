@@ -28,7 +28,7 @@ using json = nlohmann::json;
 namespace
 {
 
-// The branches of every waveforms tree (README "Waveforms").
+// The branches of every waveforms tree (docs/usage.md "Waveforms").
 const char *const Branches[] = { "event", "channel", "timestamp", "config", "phase", "length", "nsamples", "samples" };
 
 std::string rootMessages;

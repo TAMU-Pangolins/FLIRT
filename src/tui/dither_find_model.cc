@@ -1,7 +1,8 @@
 // "Find from a file..." in the options form (docs/design.md, "TUI"):
 // flirt-tui runs `flirt-convert
 // --find-dither-offset --json-events <file>` (src/ui/dither_find.cc) and
-// applies its events here (README "Events for programs"); it never opens
+// applies its events here (docs/usage.md "Events for programs"); it never
+// opens
 // the ROOT file itself.
 
 #include <cmath>

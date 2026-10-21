@@ -84,8 +84,8 @@ struct Browser
 };
 
 // The waveform view (docs/design.md, "TUI", "Waveform view"):
-// flirt-waveforms's answers as they came (README "Events for programs"). A
-// frame is one event's traces of one module.
+// flirt-waveforms's answers as they came (docs/usage.md "Events for
+// programs"). A frame is one event's traces of one module.
 struct Waves
 {
     bool open = false;              // shown, its requests sent

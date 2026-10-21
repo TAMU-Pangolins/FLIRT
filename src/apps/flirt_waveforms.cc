@@ -1,9 +1,10 @@
 // flirt-waveforms (docs/design.md, "TUI", "Waveform view";
-// README "Events for programs"): reads FLIRT's <runId>_waveforms.root for
-// flirt-tui's waveform view, in a process of its own, so that ROOT's signal
-// handlers and messages never reach the screen and a damaged file cannot take
-// the screen down. One JSON request per line on stdin, one JSON answer per
-// line on stdout, flushed; exit 0 at the end of stdin. It only reads files.
+// docs/usage.md "Events for programs"): reads FLIRT's
+// <runId>_waveforms.root for flirt-tui's waveform view, in a process of its
+// own, so that ROOT's signal handlers and messages never reach the screen and
+// a damaged file cannot take the screen down. One JSON request per line on
+// stdin, one JSON answer per line on stdout, flushed; exit 0 at the end of
+// stdin. It only reads files.
 
 #include <cstdio>
 #include <fcntl.h>
@@ -20,7 +21,7 @@ int main(int argc, char *[])
     {
         std::cerr << "usage: flirt-waveforms (no arguments)\n"
                   << "Reads FLIRT waveforms files for flirt-tui: one JSON request per line on stdin,\n"
-                  << "one JSON answer per line on stdout (README, \"Events for programs\").\n";
+                  << "one JSON answer per line on stdout (docs/usage.md, \"Events for programs\").\n";
         return 2;
     }
 

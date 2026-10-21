@@ -3,8 +3,8 @@
 
 // The waveform view's reader (docs/design.md, "TUI", "Waveform view"): runs
 // <prefix>/bin/flirt-waveforms, which reads the waveforms file with ROOT in a
-// process of its own, and asks it one request at a time (README "Events for
-// programs" for the requests and answers).
+// process of its own, and asks it one request at a time (docs/usage.md
+// "Events for programs" for the requests and answers).
 
 #include <mutex>
 #include <nlohmann/json.hpp>

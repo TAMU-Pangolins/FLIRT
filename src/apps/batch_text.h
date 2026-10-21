@@ -1,10 +1,10 @@
 #ifndef FLIRT_APPS_BATCH_TEXT_H
 #define FLIRT_APPS_BATCH_TEXT_H
 
-// flirt-convert's human-readable text (README "What flirt-convert prints"):
-// one block per run, printed when the run ends, and the end of the batch. The
-// blocks are made from structured data, a converted run's from its report;
-// batch.cc makes the others from its Run state. Only this text: the
+// flirt-convert's human-readable text (docs/usage.md "What flirt-convert
+// prints"): one block per run, printed when the run ends, and the end of the
+// batch. The blocks are made from structured data, a converted run's from its
+// report; batch.cc makes the others from its Run state. Only this text: the
 // --json-events stream, the reports and --summary do not come from here.
 
 #include <nlohmann/json.hpp>

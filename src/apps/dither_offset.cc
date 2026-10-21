@@ -477,8 +477,9 @@ void find_usage(const char *argv0)
               << "Prints the dither offset of each _raw.root that mvme_root_client wrote, one\n"
               << "line per file, and converts nothing. Convert with it: --dither-offset <N>, or\n"
               << "--dither-offset-from <official _raw.root> to find and use it in one step\n"
-              << "(README, \"Dither offset\"). Searches the first 4,294,967,296 draws.\n"
-              << "--json-events: events on stdout instead, for programs (README, \"Events for programs\").\n"
+              << "(docs/usage.md, \"Dither offset\"). Searches the first 4,294,967,296 draws.\n"
+              << "--json-events: events on stdout instead, for programs (docs/usage.md,\n"
+              << "\"Events for programs\").\n"
               << "Exit codes: 0 every offset found, 1 not every one, 2 usage.\n";
 }
 
@@ -495,8 +496,9 @@ bool is_listfile_input(const std::string &path)
 int run_find_dither_offset(int argc, char *argv[])
 {
     // --json-events: events on stdout for flirt-tui's "Find from a file..."
-    // (README "Events for programs"), on a copy of stdout while fd 1 points at
-    // stderr (as flirt-waveforms: stray library output cannot corrupt them).
+    // (docs/usage.md "Events for programs"), on a copy of stdout while fd 1
+    // points at stderr (as flirt-waveforms: stray library output cannot
+    // corrupt them).
     bool events = false;
     for (int i = 1; i < argc; ++i)
         events = events || std::string(argv[i]) == "--json-events";

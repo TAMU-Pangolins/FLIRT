@@ -443,7 +443,7 @@ std::string JobManager::real_argument(const std::string &sent) const
     return sent;
 }
 
-// One --json-events line (README "Events for programs").
+// One --json-events line (docs/usage.md "Events for programs").
 void JobManager::on_stdout_line(const std::string &line)
 {
     json e;

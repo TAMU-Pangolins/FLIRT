@@ -5,8 +5,8 @@
 // detail, kept, with the archive's "central directory" called its index and
 // thousands separated), what to do, and the integrity check that failed.
 // The one table flirt-convert's result lines and flirt-tui's details (through
-// src/ui/job.cc) both use (README "Input integrity checks"). It decides
-// nothing: the result and the note are flirt-convert's (the summary's
+// src/ui/job.cc) both use (docs/usage.md "Input integrity checks"). It
+// decides nothing: the result and the note are flirt-convert's (the summary's
 // "result" and "note"; the note of a failed check is its line
 // "<check>: fail: <detail>", src/apps/flirt_convert.cc Checks::printFailures).
 
