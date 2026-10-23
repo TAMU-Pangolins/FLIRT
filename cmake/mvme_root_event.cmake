@@ -30,7 +30,8 @@ add_custom_command(
     WORKING_DIRECTORY ${FLIRT_PREFIX_LIB}
     DEPENDS ${FLIRT_PREFIX_INC}/mvme_root_event_objects.h
             ${FLIRT_PREFIX_INC}/mvme_root_event_objects_LinkDef.h
-    COMMENT "rootcling: mvme_root_event dictionary")
+    COMMENT "rootcling: mvme_root_event dictionary"
+    VERBATIM)
 
 add_library(mvme_root_event SHARED
     ${MVME_ROOT_CLIENT_DIR}/mvme_root_event_objects.cxx

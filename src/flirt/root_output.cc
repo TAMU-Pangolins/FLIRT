@@ -475,8 +475,10 @@ void RootWriter::Private::loadExperimentClasses(const es::StreamInfo &streamInfo
     TString p(inc.c_str());
     if (gSystem->ExpandPathName(p) || p != inc.c_str())
         throw std::runtime_error("ROOT cannot use FLIRT's install folder " + opts.mvmePrefix
-                                 + ": its path holds characters ROOT reads as variables or patterns"
-                                 " ($ ~ * ? [ ] { } ( )); install FLIRT in another folder");
+                                 + ": ROOT would change its path (it reads a '$' as the start of a"
+                                 " variable name, and removes every ')' when the path also holds any"
+                                 " of ~ * ? [ ] { } $); install FLIRT in a folder whose path has no"
+                                 " '$' and no ')'");
     gInterpreter->AddIncludePath(inc.c_str());
 
     // The base classes come from the compiled mvme_root_event dictionary;

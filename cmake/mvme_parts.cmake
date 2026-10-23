@@ -72,5 +72,6 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${MVME_DIR}/templates ${FLIRT_PREFIX}/templates
     COMMAND ${CMAKE_COMMAND} -E touch ${FLIRT_PREFIX}/templates.stamp
     DEPENDS ${MVME_TEMPLATE_FILES}
-    COMMENT "Installing mvme module templates")
+    COMMENT "Installing mvme module templates"
+    VERBATIM)
 add_custom_target(mvme_templates ALL DEPENDS ${FLIRT_PREFIX}/templates.stamp)

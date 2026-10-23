@@ -55,4 +55,4 @@ for tool in compare; do
     ninja -C "$repo/build/macos-$tool"
     echo "built: $repo/build/macos-$tool/$tool"
 done
-echo "to run them by name in this shell: source '$repo/build/macos/env.sh' (tcsh: env.csh)"
+echo "to run them by name in this shell: source $(printf '%q' "$repo/build/macos/env.sh") (tcsh: env.csh)"
