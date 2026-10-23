@@ -1,5 +1,5 @@
-# flirt-tui (docs/design.md, "TUI"): the
-# conversion screen in the terminal; runs <its own directory>/flirt-convert
+# flirt-tui (docs/design.md, "TUI"): FLIRT's
+# terminal user interface; runs <its own directory>/flirt-convert
 # through flirt_ui's JobManager. FTXUI (external/FTXUI, submodule, v6.1.9);
 # no Qt, ROOT or mvme.
 set(FTXUI_DIR ${CMAKE_SOURCE_DIR}/external/FTXUI)

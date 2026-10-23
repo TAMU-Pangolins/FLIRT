@@ -1,5 +1,5 @@
-// flirt-tui (docs/design.md, "TUI"): the FLIRT conversion screen in the
-// terminal. It runs <its own directory>/flirt-convert as a user would,
+// flirt-tui (docs/design.md, "TUI"): FLIRT's terminal user interface.
+// It runs <its own directory>/flirt-convert as a user would,
 // through JobManager (src/ui/job.h), and shows job.cc's display fields as
 // they are.
 //
@@ -76,7 +76,7 @@ void usage(std::ostream &out)
 {
     out << "usage: flirt-tui [<input>...] [-o <outdir>] [--no-mouse]\n"
         << "\n"
-        << "The FLIRT conversion screen in the terminal: choose mvme listfiles (.zip), the\n"
+        << "FLIRT's terminal user interface (TUI): choose mvme listfiles (.zip), the\n"
         << "output folder and the options, then Convert. It runs the flirt-convert next to it.\n"
         << "An input directory adds its *.zip files (not recursive, in natural order).\n"
         << "The arguments only fill the screen; nothing starts until you press Convert.\n"
