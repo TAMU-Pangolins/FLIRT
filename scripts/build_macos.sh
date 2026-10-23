@@ -33,7 +33,12 @@ for tool in cmake ninja; do
     [ -x "$brewbin/$tool" ] || fail "$tool not found in $brewbin: brew install $tool"
 done
 [ -x /usr/bin/c++ ] && xcrun --show-sdk-path > /dev/null 2>&1 || fail "no C++ compiler: xcode-select --install"
-if [ ! -f "$repo/external/FTXUI/CMakeLists.txt" ]; then
+# FTXUI is needed only for flirt-tui: not when it is switched off.
+tui=1
+for arg in "$@"; do
+    case "$arg" in -DFLIRT_BUILD_TUI=OFF | -DFLIRT_BUILD_TUI:BOOL=OFF) tui=0 ;; esac
+done
+if [ "$tui" = 1 ] && [ ! -f "$repo/external/FTXUI/CMakeLists.txt" ]; then
     fail "external/FTXUI is missing: git submodule update --init external/FTXUI
 (or build without flirt-tui: scripts/build_macos.sh -DFLIRT_BUILD_TUI=OFF)"
 fi
