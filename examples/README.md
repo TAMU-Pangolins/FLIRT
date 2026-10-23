@@ -6,9 +6,8 @@ recording (MVLC over USB, one event with three MDPP-32 modules, `mdpp_a`,
 `mdpp_b` and `mdpp_c`, and an event stamper), about 20 seconds long and
 dated 3 March 2026. Its readings and traces are invented:
 
-- `mdpp_c` shows a gamma spectrum with peaks at the energies of some
-  gamma lines, on a falling background, through the calibration
-  amplitude = 32 × energy in keV;
+- `mdpp_c` shows a gamma spectrum: peaks at the energies of some gamma
+  lines, on a falling background;
 - `mdpp_a` and `mdpp_b` hold made-up distributions;
 - every recorded trace is a made-up pulse whose height is 0.1 × its hit's
   amplitude.
