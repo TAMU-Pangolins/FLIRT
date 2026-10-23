@@ -12,8 +12,9 @@ already recorded and never connects to an MVLC or takes data itself.
 FLIRT has four programs:
 
 - `flirt-convert` converts listfiles from the command line;
-- `flirt-tui` does the same in a terminal screen, and shows the waveforms;
-- `flirt-info` shows what a listfile recorded about its run, without
+- `flirt-tui` does the same in a terminal user interface (TUI), and shows
+  the waveforms;
+- `flirt-info` displays what a listfile recorded about its run, without
   converting it;
 - `compare` checks whether two ROOT files hold the same data.
 
@@ -29,8 +30,8 @@ FLIRT has four programs:
   conversion has worked, and FLIRT never overwrites a file.
 - **It writes only where you tell it to.** Results go only into the
   output folder you choose, and into any extra file you name, such as a
-  summary. The only other thing FLIRT saves, the settings of its terminal
-  screen, stays inside FLIRT's own folder. Nothing is written anywhere
+  summary. The only other thing FLIRT saves, the settings of `flirt-tui`,
+  stays inside FLIRT's own folder. Nothing is written anywhere
   else on your computer.
 
 [docs/usage.md, "What FLIRT promises"](docs/usage.md#what-flirt-promises)
@@ -48,10 +49,10 @@ with mvme's own files.
   changed through mvme during the run.
 - Every recorded trace (waveform), of every channel, in a separate
   `_waveforms.root` file.
-- `flirt-info`: what a listfile, or a folder of them, recorded, without
-  converting.
-- `flirt-tui`: convert in a terminal screen, and play the waveforms event
-  by event.
+- `flirt-info`: displays what a listfile, or a folder of them, recorded,
+  without converting.
+- `flirt-tui`: convert in a terminal user interface, and play the
+  waveforms event by event.
 - `compare`: checks two ROOT files value by value.
 - Faster or smaller compression, pile-up and overflow flags for MDPP
   amplitudes, finding the dither offset of mvme's own files, and
@@ -69,7 +70,8 @@ A recent C++ compiler, CMake, make, git, Qt 5 (only its core library),
 Boost, zlib and ROOT 6. FLIRT was developed and tested on Rocky
 Linux 8 (x86_64) and macOS (Apple silicon), with ROOT 6.36.04.
 [Requirements](#requirements) says why each is needed, and
-docs/building.md gives the commands to install them.
+docs/building.md gives the commands to install them. For ROOT, follow
+ROOT's own installation instructions, which docs/building.md links to.
 
 ### 2. Download FLIRT
 
@@ -79,7 +81,7 @@ cd FLIRT
 ```
 
 `--recurse-submodules` is needed to also download the code FLIRT builds on: mvme, and
-FTXUI for the terminal screen.
+FTXUI for `flirt-tui`.
 
 ### 3. Build
 
@@ -208,7 +210,7 @@ The [tutorial](docs/tutorial.md) goes on from here, step by step.
 
 | Document | What's in it |
 |---|---|
-| [docs/tutorial.md](docs/tutorial.md) | A hands-on walk through FLIRT with the example run: converting, the files, comparing with mvme, the terminal screen, what FLIRT refuses. |
+| [docs/tutorial.md](docs/tutorial.md) | A hands-on walk through FLIRT with the example run: converting, the files, comparing with mvme, the terminal user interface, what FLIRT refuses. |
 | [docs/usage.md](docs/usage.md) | The full reference: what FLIRT promises, every program, option, output file, report field, message and exit code, and what it was tested with. |
 | [docs/building.md](docs/building.md) | What to install, and building on Linux and macOS. |
 | [docs/design.md](docs/design.md) | The design decisions the code refers to, and why. |
@@ -220,9 +222,9 @@ The [tutorial](docs/tutorial.md) goes on from here, step by step.
 You supply:
 
 - a C++17 compiler with a recent standard library, because mesytec-mvlc
-  (bundled inside mvme) uses the C++20 header `<version>`, which GCC's
-  library has from GCC 9 on (tested with GCC 13 on Linux and Apple clang 16
-  on macOS);
+  (bundled inside mvme) uses the C++ header `<version>`, a part of the C++
+  standard library that GCC has only from version 9 on (tested with GCC 13
+  on Linux and Apple clang 16 on macOS);
 - [CMake](https://cmake.org) 3.18 or newer and make (or Ninja), which
   build FLIRT (mesytec-mvlc needs 3.18);
 - `git`, to download FLIRT and the code it builds on;
@@ -265,8 +267,8 @@ src/
 ├── apps/       the programs: flirt-convert, flirt-info, flirt-waveforms
 ├── common/     small helpers the programs share
 ├── flirt/      the conversion: wiring mvme's code, the checks, the run summary
-├── ui/         what flirt-tui runs and reads (no screen code)
-├── tui/        flirt-tui's screen
+├── ui/         what flirt-tui runs and reads (no interface code)
+├── tui/        flirt-tui's terminal user interface
 └── macos/      what the Mac build needs in place of USB code
 tools/compare/  the checking tool; shares no code with the converter
 examples/       the example run and mvme's files for it
