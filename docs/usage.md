@@ -632,9 +632,12 @@ flirt-convert run042.zip -o out/ --dither-offset-from official/run042_raw.root
 - No offset can be found in a file that was not dithered, a file that is
   not an mvme `_raw.root`, a `_histos.root`, a file with several event
   trees, or a file with no hits. FLIRT says which.
-- A file that FLIRT made gives the offset it was made with. A file in
-  which mvme replayed the run twice gives the first copy's offset, with a
-  note.
+- A file that FLIRT made with `--official-waveform-branches` gives the
+  offset it was made with. One made with the default settings gives none
+  when the analysis has waveform sources: their values took random
+  numbers that the file does not hold, and the message says so.
+- A file in which mvme replayed the run twice gives the first copy's
+  offset, with a note.
 
 ### Default filters
 

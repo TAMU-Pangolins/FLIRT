@@ -429,8 +429,9 @@ void search_dither_offsets(std::vector<OfficialRaw *> all, uint64_t draws,
             f->problem = stopped
                 ? "the search was stopped after " + with_separators(i) + " draws"
                 : "not found in the first " + with_separators(i) + " draws of TRandom3(4357): the file was not "
-                  "made by mvme_root_client or FLIRT, or its mvme_root_client had dithered more values than that "
-                  "before this run";
+                  "made by mvme_root_client, or its mvme_root_client had dithered more values than that before "
+                  "this run, or FLIRT made it without the analysis's waveform sources (its default), whose values "
+                  "took draws the file does not hold";
 }
 
 json official_raw_json(const OfficialRaw &raw)
