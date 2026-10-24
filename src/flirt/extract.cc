@@ -357,7 +357,7 @@ bool Extractor::processEvent(int eventIndex, const parser::ModuleData *moduleDat
                                        moduleData.data.data, moduleData.data.size);
 
             // FLIRT's decoders get the same data, as an a2 sample decoder
-            // source would (a2.cc:4927-4929, 866).
+            // source would (a2.cc:4927-4929, 869).
             for (auto &fd: flirtDecoders)
                 if (fd.moduleIndex == moduleIndex)
                     fd.decoded = fd.decode(moduleData.data.data, moduleData.data.size, {});

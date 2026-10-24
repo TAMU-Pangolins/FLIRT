@@ -4,7 +4,7 @@
 // --extract-hit-flags (docs/design.md, "Hit flags"): a flag
 // source next to each MDPP amplitude or integral extractor, as mvme's manual
 // describes editing an analysis for them (doc/sphinx/source/analysis.rst:536-571).
-// mvme's filters match only '0' and '1' (data_filter.cc:46-55), so the pile-up
+// mvme's filters match only '0' and '1' (mesytec-mvlc util/data_filter.cc:46-55), so the pile-up
 // and over/underflow bits (P, O) of a data word are never extracted otherwise.
 // The edit happens on the analysis document before it is parsed, so the
 // conversion follows it as it follows any analysis; the document is also

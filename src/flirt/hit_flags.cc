@@ -44,7 +44,7 @@ const FlagTemplate Templates[] = {
 
 constexpr int FilterSize = 32;
 
-// The filter as make_filter reads it (data_filter.cc:28-57): spaces removed,
+// The filter as make_filter reads it (mesytec-mvlc util/data_filter.cc:28-57): spaces removed,
 // a shorter filter's missing high bits 'X'. Index i holds bit 31 - i.
 std::string full_filter(const QString &filterString)
 {
@@ -57,7 +57,7 @@ std::string full_filter(const QString &filterString)
     return std::string(FilterSize - s.size(), 'X') + s;
 }
 
-// The fixed bits, as make_filter's matchMask and matchValue (data_filter.cc:46-55).
+// The fixed bits, as make_filter's matchMask and matchValue (mesytec-mvlc util/data_filter.cc:46-55).
 std::pair<uint32_t, uint32_t> fixed_bits(const std::string &filter)
 {
     uint32_t mask = 0, value = 0;
