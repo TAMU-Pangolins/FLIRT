@@ -901,8 +901,8 @@ std::vector<Line> help_lines(const Model &m, int width)
         l.key("From a file…", "under the dither offset: pick a _raw.root; Stop search ends the search");
         l.key("Channel picker", "a click on a channel picks it; All, None, Done");
         l.add("To select text, hold Shift while you drag (⌥ Option in iTerm2; in macOS Terminal, ⌘R turns the "
-              "mouse off and on), or start flirt-tui with --no-mouse. Checked by automated tests and in Ghostty "
-              "on a Mac; other terminals not yet checked.", "muted");
+              "mouse off and on), or start flirt-tui with --no-mouse. Checked by automated tests and by hand in "
+              "one terminal on a Mac; other terminals not yet checked.", "muted");
     }
     else
         l.add("The mouse is off (--no-mouse).", "muted");
