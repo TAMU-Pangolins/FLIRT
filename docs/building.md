@@ -115,7 +115,7 @@ Go to the folder where you want FLIRT, for example a folder named
 ```sh
 mkdir -p ~/software
 cd ~/software
-git clone --recurse-submodules https://github.com/KhangPham0/FLIRT.git
+git clone --recurse-submodules https://github.com/TAMU-Pangolins/FLIRT.git
 cd FLIRT
 ```
 
@@ -244,7 +244,7 @@ Go to the folder where you want FLIRT, for example a folder named
 ```sh
 mkdir -p ~/software
 cd ~/software
-git clone --recurse-submodules https://github.com/KhangPham0/FLIRT.git
+git clone --recurse-submodules https://github.com/TAMU-Pangolins/FLIRT.git
 cd FLIRT
 ```
 

@@ -76,7 +76,7 @@ ROOT's own installation instructions, which docs/building.md links to.
 ### 2. Download FLIRT
 
 ```sh
-git clone --recurse-submodules https://github.com/KhangPham0/FLIRT.git
+git clone --recurse-submodules https://github.com/TAMU-Pangolins/FLIRT.git
 cd FLIRT
 ```
 
