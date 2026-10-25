@@ -1,7 +1,10 @@
-# FLIRT
+<p align="center">
+  <img src="docs/assets/logo.png" width="320" alt="FLIRT: Fast Listfile Interpretation and ROOT Translation">
+</p>
 
-FLIRT stands for **F**ast **L**istfile **I**nterpretation and **R**OOT
-**T**ranslation.
+<p align="center"><em>The perfect match for your mvme listfiles: the same ROOT files as mvme, without running mvme.</em></p>
+
+---
 
 ![flirt-tui converting a made-up run, then playing its recorded traces](docs/assets/flirt-tui.gif)
 
