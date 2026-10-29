@@ -107,6 +107,15 @@ question before it installs. The packages are:
 - `zlib-devel` and `xz-devel`: compression libraries, which mesytec-mvlc
   uses to read the listfiles' ZIP archives.
 
+To see which of these packages are installed already, run:
+
+```sh
+rpm -q gcc-toolset-13-gcc-c++ make cmake git qt5-qtbase-devel boost-devel zlib-devel xz-devel
+```
+
+`rpm -q` lists each package with its version, or says that it `is not
+installed`. Only the missing ones need installing.
+
 ### 2. Download FLIRT
 
 Go to the folder where you want FLIRT, for example a folder named

@@ -98,6 +98,11 @@ terminal first (`<root>` is the folder ROOT is installed in):
 source <root>/bin/thisroot.sh      # in tcsh: source <root>/bin/thisroot.csh
 ```
 
+On Rocky Linux 8, first run `source /opt/rh/gcc-toolset-13/enable` (in
+tcsh, type `bash` first). It makes the build use GCC 13, because the
+system's own compiler is too old ([docs/building.md, step
+3](docs/building.md#3-build)).
+
 On Linux, build FLIRT and then `compare`:
 
 ```sh
