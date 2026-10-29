@@ -1,0 +1,8 @@
+/* Linker version script for libmesytec-mvlc.so on Linux (CMakeLists.txt):
+   the library's copies of the C++ standard library's std::filesystem stay
+   private to it, so that they cannot replace ROOT's own. Everything else is
+   exported as before. */
+{
+  global: *;
+  local: extern "C++" { std::filesystem::*; };
+};

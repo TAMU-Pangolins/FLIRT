@@ -39,6 +39,20 @@ if (APPLE)
     target_sources(mesytec-mvlc PRIVATE
         ${MVME_DIR}/external/mesytec-mvlc/src/mesytec-mvlc/mvlc_impl_usb_linux_x86_64.cc
         ${CMAKE_SOURCE_DIR}/src/macos/ftd3xx_stubs.cc)
+else()
+    # With gcc-toolset on Rocky Linux 8, the newer GCC copies the parts of the
+    # C++ standard library that the system's GCC 8 library lacks, such as
+    # std::filesystem, into each shared library (libstdc++_nonshared.a), and
+    # its headers add pieces of std::filesystem (path::~path, path::extension).
+    # Exported from libmesytec-mvlc.so, the first library flirt-convert loads,
+    # they replaced the copies inside a ROOT built with GCC 8, whose layout
+    # differs: ROOT 6.39 crashed as it started (TROOT::GetSharedLibDir). Keep
+    # them private to the library (the version script hides std::filesystem).
+    set(MVLC_VERSION_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/mesytec_mvlc.map)
+    target_link_options(mesytec-mvlc PRIVATE
+        "LINKER:--exclude-libs,libstdc++_nonshared.a"
+        "LINKER:--version-script=${MVLC_VERSION_SCRIPT}")
+    set_property(TARGET mesytec-mvlc APPEND PROPERTY LINK_DEPENDS ${MVLC_VERSION_SCRIPT})
 endif()
 
 include(cmake/mvme_parts.cmake)
